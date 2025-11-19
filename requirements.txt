@@ -1,0 +1,5 @@
+vizdoom==1.3.0.dev2
+# cl-sdk
+tables
+tensorboard==2.20.0
+torch
