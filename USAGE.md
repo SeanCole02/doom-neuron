@@ -225,4 +225,4 @@ Press `Ctrl+C` in either terminal to gracefully shutdown:
 - `training_log.jsonl` - Episode statistics
 
 **CL1 Interface:**
-- `<recording_path>/*.cl1` - Neural recordings with metadata
+- `<recording_path>/*.h5` - Neural recordings with metadata
