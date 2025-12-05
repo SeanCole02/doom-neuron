@@ -26,12 +26,6 @@ from vizdoom import DoomGame, GameState, Mode, Button, GameVariable
 # NOTE: (2025-11-19, jz) always use CL
 import cl
 from cl.data_stream import DataStream
-
-# NOTE: (2025-11-19, al) get labman plugin
-from _cl.recording import get_combined_recording_attributes
-LABMAN_ATTRS = get_combined_recording_attributes() # Get attributes from Labman based on info in CL1 Recordings Dashboard Page
-
-
 CL_AVAILABLE = True
 # try:
 #     import cl

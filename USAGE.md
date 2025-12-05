@@ -2,10 +2,26 @@
 
 ## Quick Start
 
+Notes (2025-11-25, jz):
+- Try to start both at around the same time, but start CL1 before the Training Server.
+- Added convenience scripts below.
+
+```shell
+# Run this on CL1
+# Check the ip address and tick frequency is correct
+./scripts/run_cl1.sh
+```
+
+```shell
+# Run this on a machine with CUDA
+# Check the ip address and max-episodes is correct
+./scripts/run_training_server.sh
+```
+
 ### 1. Start CL1 Neural Interface (on CL1 device)
 
 ```bash
-python cl1_neural_interface.py --training-host <TRAINING_IP>
+python cl1_neural_interface.py --training-host <TRAINING_IP> --tick-frequency 10
 ```
 
 ### 2. Start Training Server (on training machine)
@@ -225,4 +241,4 @@ Press `Ctrl+C` in either terminal to gracefully shutdown:
 - `training_log.jsonl` - Episode statistics
 
 **CL1 Interface:**
-- `<recording_path>/*.h5` - Neural recordings with metadata
+- `<recording_path>/*.cl1` - Neural recordings with metadata

@@ -186,7 +186,12 @@ class CL1NeuralInterface:
         neurons.interrupt(self.config.all_channels_set)
 
         # Apply stimulation for each channel set
-        for i, (_, _, channel_set) in enumerate(self.channel_groups):
+        #for i, (_, _, channel_set) in enumerate(self.channel_groups):
+
+        # NOTE: (2025-11-25 jz/al) Rather than applying stim to all channel groups, stim only the encoding channels
+        for i, channel_num in enumerate(self.config.encoding_channels):
+            channel_set = cl.ChannelSet(channel_num)
+
             if channel_set is None:
                 continue
 
@@ -530,8 +535,8 @@ def main():
     parser.add_argument(
         '--tick-frequency',
         type=int,
-        default=240,
-        help='Frequency to run neurons.loop() in Hz (default: 240)'
+        default=10,
+        help='Frequency to run neurons.loop() in Hz (default: 10)'
     )
     parser.add_argument(
         '--recording-path',

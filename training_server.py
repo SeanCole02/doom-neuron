@@ -30,6 +30,9 @@ import udp_protocol
 # CL SDK not needed on training system - hardware is remote
 CL_AVAILABLE = False
 
+# NOTE: (2025-11-18, jz) Use mjpeg for simple visualisation
+from mjpeg_server import MJPEGServer
+
 from collections import OrderedDict
 
 class LRUCache(OrderedDict):
@@ -132,6 +135,11 @@ class PPOConfig:
     cl1_spike_port: int = 12346  # Port for receiving spike data from CL1
     cl1_event_port: int = 12347  # Port for sending event metadata to CL1
     cl1_feedback_port: int = 12348  # Port for sending feedback stimulation to CL1
+
+    # Visualisation
+    vis_host: str = "0.0.0.0"      # IP for hosting visualisations
+    vis_port: int = 12349          # Port for hosting visualisations
+    vis_path: str = "/doom.mjpeg"  # Path for hosting visualisations
 
     # Network architecture
     hidden_size: int = 128
@@ -1179,9 +1187,9 @@ class VizDoomEnv:
         self.prev_armor_distance = self._armor_distance(state)
         return self._get_observation(state)
 
-    def step(self, action: Tuple[int, int, int, int]) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action: Tuple[int, int, int, int]) -> Tuple[np.ndarray, float, bool, Dict, None | np.ndarray]:
         """
-        Execute action and return (observation, reward, done, info).
+        Execute action and return (observation, reward, done, info, screen_buffer).
 
         Args:
             action: Tuple of (forward_idx, strafe_idx, turn_idx, attack_flag)
@@ -1265,6 +1273,7 @@ class VizDoomEnv:
 
         # Get new state
         state = self.game.get_state()
+        screen_buffer = getattr(state, "screen_buffer", None) # VizDoom screen buffer is (channels, H, W)
         done = self.game.is_episode_finished()
 
         game_reward = self.game.get_last_reward()
@@ -1376,7 +1385,7 @@ class VizDoomEnv:
             'armor_distance_final': armor_distance_final
         }
 
-        return obs, reward, done, info
+        return obs, reward, done, info, screen_buffer
 
     def _get_observation(self, state: GameState) -> np.ndarray:
         """Extract fully normalized observation vector for PPO."""
@@ -1838,7 +1847,7 @@ def _vizdoom_worker(
 
             if cmd == 'step':
                 action = data
-                next_obs, reward, done, info = env.step(action)
+                next_obs, reward, done, info, screen_buffer = env.step(action)
 
                 if done:
                     info = info or {}
@@ -2043,6 +2052,16 @@ class PPOTrainer:
         # Socket for sending feedback stimulation commands to CL1
         self.feedback_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         print(f"[SUCCESS] Created UDP socket for sending feedback commands to {self.config.cl1_host}:{self.config.cl1_feedback_port}\n")
+
+    def set_up_image_stream_server(self):
+        """ Set up a MJPEGServer to run on a separate process for visualising the game frame buffer. """
+        print(f"\n[MJPEGServer Setup]")
+        print(f"  Visualisations hosting at {self.config.vis_host}:{self.config.vis_port}{self.config.vis_path}")
+        self.image_stream = MJPEGServer(
+            host = self.config.vis_host,
+            port = self.config.vis_port,
+            path = self.config.vis_path
+            )
 
     def _init_vectorized_envs(self) -> Tuple[int, int]:
         """Spin up VizDoom environments across multiple processes."""
@@ -2915,11 +2934,11 @@ class PPOTrainer:
 
                 # Execute action in VizDoom
                 # MARK: Get obs from game environment
-                next_obs, reward, done, info = self.env.step(action_tuple)
+                next_obs, reward, done, info, screen_buffer = self.env.step(action_tuple)
                 game_reward_sum += info.get('game_reward', 0.0)
 
                 # Store data (including spike_features for policy update)
-                observations.append(obs)
+                observations.append(obs) # MARK: append obs
                 spike_features_list.append(spike_counts)
                 forward_actions.append(int(forward_action.item()))
                 strafe_actions.append(int(strafe_action.item()))
@@ -2962,6 +2981,11 @@ class PPOTrainer:
                     baseline,
                     reward
                 )
+
+                # NOTE: (2025-11-28) Update image stream using screen buffer
+                if hasattr(self, "image_stream") and screen_buffer is not None:
+                    screen_buffer = screen_buffer.transpose(1, 2, 0) # (channels, H, W) -> (H, W, channels)
+                    self.image_stream.update(screen_buffer)
 
                 # Track episodes
                 if info['episode_reward'] is not None:
@@ -3629,6 +3653,9 @@ class PPOTrainer:
                 # Recording and datastream handled on CL1 device side
                 print("NOTE: Recording and datastream managed by CL1 device\n")
 
+                # Setup image stream server for visualisation
+                self.set_up_image_stream_server()
+
                 while self.total_episodes < self.config.max_episodes:
                     rollout_data = self._collect_rollouts_hardware(
                         self.config.steps_per_update,
@@ -3682,6 +3709,9 @@ class PPOTrainer:
                 if self.feedback_socket:
                     self.feedback_socket.close()
                     print("[SUCCESS] Closed feedback socket")
+                if hasattr(self, "image_stream"):
+                    self.image_stream.close()
+                    print("[SUCCESS] Closed image stream server")
                 if self.env is not None:
                     self.env.close()
             else:
@@ -3690,6 +3720,109 @@ class PPOTrainer:
         elapsed_time = time.time() - start_time
         print(f"\n{'='*70}")
         print(f"Training completed!")
+        print(f"Total time: {elapsed_time:.2f}s")
+        print(f"Total steps: {self.total_steps}")
+        print(f"Total episodes: {self.total_episodes}")
+        print(f"{'='*70}\n")
+
+        # Save final model
+        self.save_checkpoint("final_model.pt")
+        self.writer.close()
+
+    def watch(self):
+        """
+        NOTE: (2025-11-28, jz) Adapted from self.train() and removing policy updates
+        """
+        start_time = time.time()
+
+        try:
+            if self.config.use_hardware:
+                # Setup UDP sockets for CL1 communication
+                self.setup_udp_sockets()
+
+                print("[SUCCESS] Connected to CL1 device via UDP")
+                event_channels = []
+                for cfg in self.config.event_feedback_settings.values():
+                    event_channels.extend(cfg.channels)
+                used_channels = (
+                    self.config.encoding_channels
+                    + self.config.move_forward_channels
+                    + self.config.move_backward_channels
+                    + self.config.move_left_channels
+                    + self.config.move_right_channels
+                    + self.config.turn_left_channels
+                    + self.config.turn_right_channels
+                    + self.config.attack_channels
+                    + event_channels
+                )
+                used_channels = sorted(dict.fromkeys(used_channels))
+                print(f"Using {len(used_channels)} channels: {used_channels[:20]}...")
+                print("")
+
+                # Recording and datastream handled on CL1 device side
+                print("NOTE: Recording and datastream managed by CL1 device\n")
+
+                # Setup image stream server for visualisation
+                self.set_up_image_stream_server()
+
+                while self.total_episodes < self.config.max_episodes:
+                    rollout_data = self._collect_rollouts_hardware(
+                        self.config.steps_per_update,
+                        self.tick_frequency_hz
+                    )
+
+                    self._log_progress()
+                    if self.total_steps % 5000 == 0:
+                        self.writer.flush()
+
+                # Training complete - notify CL1 to stop recording
+                if self.event_socket:
+                    try:
+                        completion_data = {
+                            "total_episodes": self.total_episodes,
+                            "total_steps": self.total_steps,
+                            "reason": "max_episodes_reached"
+                        }
+                        event_packet = udp_protocol.pack_event_metadata("training_complete", completion_data)
+                        self.event_socket.sendto(event_packet, (self.config.cl1_host, self.config.cl1_event_port))
+                        print("\n[SUCCESS] Sent training completion signal to CL1")
+                        time.sleep(0.5)  # Give CL1 time to process
+                    except Exception as e:
+                        print(f"\n[WARNING] Failed to send training completion signal: {e}")
+
+            else:
+                while self.total_episodes < self.config.max_episodes:
+                    rollout_data = self._collect_rollouts_vectorized(self.config.steps_per_update)
+                    self._log_progress()
+                    if self.total_steps % 5000 == 0:
+                        self.writer.flush()
+
+        finally:
+            if self.config.use_hardware:
+                # Close UDP sockets
+                if self.stim_socket:
+                    self.stim_socket.close()
+                    print("[SUCCESS] Closed stimulation socket")
+                if self.spike_socket:
+                    self.spike_socket.close()
+                    print("[SUCCESS] Closed spike socket")
+                if self.event_socket:
+                    self.event_socket.close()
+                    print("[SUCCESS] Closed event socket")
+                if self.feedback_socket:
+                    self.feedback_socket.close()
+                    print("[SUCCESS] Closed feedback socket")
+                if hasattr(self, "image_stream"):
+                    self.image_stream.close()
+                    print("[SUCCESS] Closed image stream server")
+                if self.env is not None:
+                    self.env.close()
+            else:
+                self._close_vectorized_envs()
+
+        elapsed_time = time.time() - start_time
+        print(f"\n{'='*70}")
+        print(f"Eval completed!")
         print(f"Total time: {elapsed_time:.2f}s")
         print(f"Total steps: {self.total_steps}")
         print(f"Total episodes: {self.total_episodes}")
@@ -3755,7 +3888,7 @@ class PPOTrainer:
                 pass
         print(f"Checkpoint loaded: {path} (episodes={self.total_episodes}, steps={self.total_steps})")
 
-
+# TODO: deprecate watch()
 def watch(checkpoint_path: str, config: PPOConfig, device: str = 'cpu'):
     """Run a trained policy with CL1 hardware, mirroring the training loop."""
     if not CL_AVAILABLE:
@@ -3842,7 +3975,7 @@ def main():
     parser.add_argument('--encoder-use-cnn', action='store_true',
                         help='Use CNN encoder over screen buffer in addition to scalar features')
 
-    # NOTE: (2025-19-11, jz/al) Add additional configuration
+    # NOTE: (2025-19-11, jz/al) Add additional configuration, including visualisation
     parser.add_argument('--show_window',
                         action="store_true", default=False,
                         help='Show the vizdoom window')
@@ -3850,6 +3983,8 @@ def main():
                         help='Path for saving recordings (managed by CL1 device)')
     parser.add_argument('--tick_frequency_hz', type=int, default=240,
                         help='Frequency to run the game loop in Hz')
+    parser.add_argument('--visualisation-port', type=int, default=12349,
+                        help='Port to use for accessing the visualisation image stream')
 
     # UDP Configuration for remote CL1 hardware
     parser.add_argument('--cl1-host', type=str, default='localhost',
@@ -3904,17 +4039,18 @@ def main():
     config.cl1_feedback_port = args.cl1_feedback_port
     config.use_episode_feedback = args.use_episode_feedback
     config.episode_feedback_surprise_scaling = args.episode_feedback_surprise_scaling
+    config.vis_port = args.visualisation_port
 
+    trainer = PPOTrainer(
+        config,
+        tick_frequency_hz = args.tick_frequency_hz,
+        recording_path    = args.recording_path,
+        show_window       = args.show_window,
+        device            = args.device
+        )
+    if args.checkpoint is not None:
+        trainer.load_checkpoint(args.checkpoint)
     if args.mode == 'train':
-        trainer = PPOTrainer(
-            config,
-            tick_frequency_hz = args.tick_frequency_hz,
-            recording_path    = args.recording_path,
-            show_window       = args.show_window,
-            device            = args.device
-            )
-        if args.checkpoint is not None:
-            trainer.load_checkpoint(args.checkpoint)
         trainer.train()
     # elif args.mode == 'deploy':
     #     if args.checkpoint is None:
@@ -3925,12 +4061,7 @@ def main():
     #     deploy(checkpoint_path, config)
 
     elif args.mode == 'watch':
-        if args.checkpoint is None:
-            checkpoint_path = os.path.join(config.checkpoint_dir, 'final_model.pt')
-        else:
-            checkpoint_path = args.checkpoint
-
-        watch(checkpoint_path, config, device=args.device)
+        trainer.watch()
 
 
 if __name__ == '__main__':

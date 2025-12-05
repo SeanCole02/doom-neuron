@@ -1,0 +1,20 @@
+#
+# This container is on AMD ROCm with Pytorch
+#
+# FROM rocm/pytorch:latest
+
+# Supports gfx1151
+FROM rocm/pytorch:rocm7.1_ubuntu24.04_py3.12_pytorch_release_2.8.0
+
+# Set working directory to /root
+WORKDIR /root
+
+# Copy the current directory contents to /root
+COPY . /root
+
+# Install requirements
+RUN pip install -r requirements.txt
+
+# Set default user to root and PYTHONPATH
+ENV PYTHONPATH=/root
+WORKDIR /root
