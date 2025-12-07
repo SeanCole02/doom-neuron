@@ -246,8 +246,8 @@ class PPOConfig:
     )
     decoder_enforce_nonnegative: bool = False # Can be changed, needs testing
     decoder_freeze_weights: bool = False # Can be changed, needs testing
-    decoder_zero_bias: bool = True # Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement
-    decoder_use_mlp: bool = False # Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod
+    decoder_zero_bias: bool = False # Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement
+    decoder_use_mlp: bool = True # Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod
     decoder_mlp_hidden: Optional[int] = 256 # Value felt ok, needs testing if you use decoder_use_mlp: True
     decoder_weight_l2_coef: float = 0.0 # Untuned
     decoder_bias_l2_coef: float = 0.0 # Untuned
@@ -1281,7 +1281,7 @@ class VizDoomEnv:
         ammo_spent = max(0.0, ammo_before - ammo_after)
         kills_delta = max(0.0, killcount_after - killcount_before)
         kill_reward = kills_delta * 100.0
-        damage_penalty = -damage_taken * 5.0
+        damage_penalty = -damage_taken * 3.0
         ammo_penalty = -ammo_spent * 10.0
         reward = kill_reward + damage_penalty + ammo_penalty
         enemy_kill_event = kills_delta > 0.0
@@ -1290,7 +1290,7 @@ class VizDoomEnv:
 
         # Add remaining HP penalty when episode ends
         if done:
-            remaining_hp_penalty = -current_health * 5.0
+            remaining_hp_penalty = -current_health * 3.0
             reward += remaining_hp_penalty
             obs = np.zeros(self.obs_dim, dtype=np.float32)
         else:
