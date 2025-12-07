@@ -48,14 +48,15 @@ class CL1Config:
 
     def __init__(self):
         # Channel configuration (must match training system)
-        self.encoding_channels      = [8, 9, 10, 11, 12, 13, 14, 15]
-        self.move_forward_channels  = [16, 17, 18, 19, 20, 21, 22, 23]
-        self.move_backward_channels = [24, 25, 26, 27, 28, 29, 30, 31]
-        self.move_left_channels     = [32, 33, 34, 35, 36, 37, 38, 39]
-        self.move_right_channels    = [40, 41, 42, 43, 44, 45, 46, 47]
-        self.turn_left_channels     = [48, 49, 50, 51, 52, 53, 54, 55]
-        self.turn_right_channels    = [57, 58, 59, 60, 61, 62]
-        self.attack_channels        = [1, 2, 3, 5, 6]
+        # Reduced from 9 to 8 channels to match NUM_CHANNEL_SETS
+        self.encoding_channels      = [8, 9, 10, 17, 18, 25, 27, 28]
+        self.move_forward_channels  = [41, 42, 49]
+        self.move_backward_channels = [50, 51, 58]
+        self.move_left_channels     = [13, 14, 21]
+        self.move_right_channels    = [45, 46, 53]
+        self.turn_left_channels     = [29, 30, 31, 37]
+        self.turn_right_channels    = [59, 60, 61, 62]
+        self.attack_channels        = [32, 33, 34]
 
         # Stimulation design parameters
         self.phase1_duration = 120  # μs
@@ -63,6 +64,7 @@ class CL1Config:
         self.burst_count = 1
 
         # All channels except forbidden ones
+        # Channel 64 is out of hardware range but listed as forbidden; still exclude it explicitly.
         self.all_channels = [i for i in range(64) if i not in {0, 4, 7, 56, 63}]
 
     def create_channel_sets(self):
@@ -179,8 +181,8 @@ class CL1NeuralInterface:
 
         Args:
             neurons: CL SDK neurons interface
-            frequencies: (8,) array of Hz values
-            amplitudes: (8,) array of μA values
+            frequencies: array of Hz values (first len(encoding_channels) entries are used)
+            amplitudes: array of μA values (first len(encoding_channels) entries are used)
         """
         # Interrupt ongoing stimulation
         neurons.interrupt(self.config.all_channels_set)
@@ -222,9 +224,9 @@ class CL1NeuralInterface:
             tick
 
         Returns:
-            spike_counts: (8,) array of spike counts per channel set
+            spike_counts: (num_channel_groups,) array of spike counts per channel set
         """
-        spike_counts = np.zeros(8, dtype=np.float32)
+        spike_counts = np.zeros(len(self.channel_groups), dtype=np.float32)
         for spike in tick.analysis.spikes:
             idx = self.channel_lookup.get(spike.channel)
             if idx is not None:
@@ -370,13 +372,13 @@ class CL1NeuralInterface:
                     except BlockingIOError:
                         # No packet available - this is expected sometimes
                         # Use default stimulation or skip
-                        frequencies = np.zeros(8, dtype=np.float32)
-                        amplitudes = np.zeros(8, dtype=np.float32)
+                        frequencies = np.zeros(len(self.channel_groups), dtype=np.float32)
+                        amplitudes = np.zeros(len(self.channel_groups), dtype=np.float32)
 
                     except Exception as e:
                         print(f"Error receiving/applying stimulation: {e}")
-                        frequencies = np.zeros(8, dtype=np.float32)
-                        amplitudes = np.zeros(8, dtype=np.float32)
+                        frequencies = np.zeros(len(self.channel_groups), dtype=np.float32)
+                        amplitudes = np.zeros(len(self.channel_groups), dtype=np.float32)
 
                     # Collect spikes from this tick
                     spike_counts = self.collect_spikes(tick)

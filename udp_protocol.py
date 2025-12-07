@@ -28,7 +28,7 @@ from typing import Tuple, List
 
 # Packet size constants
 TIMESTAMP_SIZE_BYTES = 8
-NUM_CHANNEL_SETS = 8
+NUM_CHANNEL_SETS = 8  # Updated from 9 - removed speed channels
 FLOAT_SIZE_BYTES = 4
 MAX_CHANNELS_PER_FEEDBACK = 64
 FEEDBACK_NAME_SIZE = 32
@@ -39,8 +39,8 @@ FEEDBACK_PACKET_SIZE = 120  # See packet format in docstring
 
 # Struct format strings (little-endian)
 # '<' = little-endian, 'Q' = unsigned long long (8 bytes), 'f' = float (4 bytes)
-STIM_FORMAT = '<Q' + ('f' * NUM_CHANNEL_SETS * 2)  # timestamp + 8 freqs + 8 amps
-SPIKE_FORMAT = '<Q' + ('f' * NUM_CHANNEL_SETS)      # timestamp + 8 spike counts
+STIM_FORMAT = '<Q' + ('f' * NUM_CHANNEL_SETS * 2)  # timestamp + freqs + amps
+SPIKE_FORMAT = '<Q' + ('f' * NUM_CHANNEL_SETS)      # timestamp + spike counts
 
 # Feedback command types
 FEEDBACK_TYPE_INTERRUPT = 0
@@ -370,8 +370,14 @@ if __name__ == "__main__":
     print("Testing UDP protocol...")
 
     # Test stimulation command packing/unpacking
-    test_freq = np.array([10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 8.0], dtype=np.float32)
-    test_amp = np.array([1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2], dtype=np.float32)
+    test_freq = np.array(
+        [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 8.0, 12.0, 18.0],
+        dtype=np.float32
+    )
+    test_amp = np.array(
+        [1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4],
+        dtype=np.float32
+    )
 
     stim_packet = pack_stimulation_command(test_freq, test_amp)
     print(f"Stimulation packet size: {len(stim_packet)} bytes")
@@ -382,7 +388,7 @@ if __name__ == "__main__":
     print(f"Amplitudes match: {np.allclose(amp, test_amp)}")
 
     # Test spike data packing/unpacking
-    test_spikes = np.array([0, 2, 5, 1, 3, 0, 4, 2], dtype=np.float32)
+    test_spikes = np.array([0, 2, 5, 1, 3, 0, 4, 2, 1, 0], dtype=np.float32)
 
     spike_packet = pack_spike_data(test_spikes)
     print(f"\nSpike packet size: {len(spike_packet)} bytes")

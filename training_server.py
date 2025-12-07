@@ -80,17 +80,18 @@ class PPOConfig:
     """Configuration for PPO training and neural interface."""
 
     # Environment
-    doom_config: str = "deadly_corridor_1.cfg"
+    doom_config: str = "progressive_deathmatch.cfg"
     screen_resolution: str = "RES_320X240"
     use_screen_buffer: bool = True
     max_turn_delta: float = 360.0           # Maximum absolute degrees for TURN_LEFT_RIGHT_DELTA
     turn_step_degrees: float = 30.0         # Discrete turn step when using turn buttons
     camera_std_init: float = 3.0           # Initial std (degrees) for camera delta distribution
-    use_discrete_action_set: bool = False   # Toggle for single categorical action space
+    use_discrete_action_set: bool = True   # Legacy flag; combinatorial action space is now default
 
     # Neural Interface - Channel Configuration
     num_channels: int = 64
-    encoding_channels: List[int] = field(default_factory=lambda: [8, 9, 10, 17, 18, 25, 27, 28, 57])
+    # Reduced from 9 to 8 channels to match NUM_CHANNEL_SETS (removed speed action)
+    encoding_channels: List[int] = field(default_factory=lambda: [8, 9, 10, 17, 18, 25, 27, 28])
     move_forward_channels: List[int] = field(default_factory=lambda: [41, 42, 49])
     move_backward_channels: List[int] = field(default_factory=lambda: [50, 51, 58])
     move_left_channels: List[int] = field(default_factory=lambda: [13, 14, 21])
@@ -98,6 +99,7 @@ class PPOConfig:
     turn_left_channels: List[int] = field(default_factory=lambda: [29, 30, 31, 37])
     turn_right_channels: List[int] = field(default_factory=lambda: [59, 60, 61, 62])
     attack_channels: List[int] = field(default_factory=lambda: [32, 33, 34])
+    speed_channels: List[int] = field(default_factory=lambda: [5, 6])
 
     # Stimulation Design Parameters (for cl.StimDesign)
     # Biphasic pulse: phase1_duration, phase1_amplitude, phase2_duration, phase2_amplitude
@@ -113,13 +115,13 @@ class PPOConfig:
 
     # PPO Hyperparameters
     learning_rate: float = 3e-4
-    gamma: float = 0.99
+    gamma: float = 0.997 # Increased from 0.99 to 9.997 as per Doom Initial Report
     gae_lambda: float = 0.95
     clip_epsilon: float = 0.2
     value_loss_coef: float = 0.3
     entropy_coef: float = 0.02
     max_grad_norm: float = 3 # This can probably be reduced to 1, 0.5 was clipping policy movements too much
-    normalize_returns: bool = True # Leave this on for the most part, stabilizes the critic, maybe a running norm would be better?
+    normalize_returns: bool = False # Turned this off as part of Doom Initial Report
 
     # Training
     num_envs: int = 1
@@ -151,13 +153,14 @@ class PPOConfig:
     eval_interval: int = 50   # episodes
     feedback_positive_threshold: float = 1 # Needs tuning
     feedback_negative_threshold: float = -1 # Needs tuning
-    armor_terminal_reward: float = 1000.0 # Needs tuning
     aim_alignment_gain: float = 2.5
     aim_alignment_max_distance: float = 250.0
     aim_alignment_bonus: float = 2.5
     aim_alignment_bonus_deg: float = 4.0
     movement_velocity_reward_scale: float = 0.01
-    simplified_reward: bool = True # Setting to false factors in manually shaped aim alignment and velocity, I did more tuning on False so its probably better kept this way
+    simplified_reward: bool = True # Set to True as part of Doom Initial Report
+    debug_joint_actions: bool = True
+    debug_joint_actions_limit: int = 500
     feedback_positive_amplitude: float = 2.0
     feedback_positive_frequency: float = 20.0
     feedback_positive_pulses: int = 30
@@ -238,52 +241,24 @@ class PPOConfig:
                 amp_max_scale=1.3,
                 pulse_gain=0.15,
                 pulse_max_scale=1.8
-            ),
-            'approach_target': EventFeedbackConfig(
-                channels=[5, 6, 11],
-                base_frequency=30.0,
-                base_amplitude=2.4,
-                base_pulses=28,
-                info_key='event_move_closer',
-                td_sign='positive',
-                freq_gain=0.25,
-                freq_max_scale=2.2,
-                amp_gain=0.10,
-                amp_max_scale=1.5,
-                pulse_gain=0.25,
-                pulse_max_scale=2.2
-            ),
-            'retreat_target': EventFeedbackConfig(
-                channels=[12, 15, 16],
-                base_frequency=120.0,
-                base_amplitude=2.1,
-                base_pulses=32,
-                info_key='event_move_farther',
-                td_sign='negative',
-                freq_gain=0.25,
-                freq_max_scale=2.2,
-                amp_gain=0.10,
-                amp_max_scale=1.5,
-                pulse_gain=0.25,
-                pulse_max_scale=2.2
             )
         }
     )
     decoder_enforce_nonnegative: bool = False # Can be changed, needs testing
     decoder_freeze_weights: bool = False # Can be changed, needs testing
-    decoder_zero_bias: bool = True # Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement
-    decoder_use_mlp: bool = False # Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod
-    decoder_mlp_hidden: Optional[int] = 32 # Value felt ok, needs testing if you use decoder_use_mlp: True
+    decoder_zero_bias: bool = False # Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement
+    decoder_use_mlp: bool = True # Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod
+    decoder_mlp_hidden: Optional[int] = 256 # Value felt ok, needs testing if you use decoder_use_mlp: True
     decoder_weight_l2_coef: float = 0.0 # Untuned
     decoder_bias_l2_coef: float = 0.0 # Untuned
-    wall_ray_count: int = 12 # Felt ok, probably not as necessary with encoder_use_cnn: True
+    wall_ray_count: int = 0 # Disabled - not using wall rays
     wall_ray_max_range: int = 64 # Keep as is
     wall_depth_max_distance: float = 18.0 # Already calibrated, keep as is
     encoder_trainable: bool = True # Can try turning it False but I would say True is needed for reasonable PPO policy gradients especially if decoder_use_mlp: False
     encoder_entropy_coef: float = -0.10 # Entropy penalty for the encoder since we use beta sampling
     decoder_ablation_mode: str = 'none' # Ablation to test if decoder is learning on its own, "random" and "zero" are valid inputs
     encoder_use_cnn: bool = True # With my testing it seems like the CNN does not overfit/learn on its own, seems useful to keep True
-    encoder_cnn_channels: int = 16 # Arbitrary value, can be changed
+    encoder_cnn_channels: int = 64 # Arbitrary value, can be changed
     encoder_cnn_downsample: int = 4 # Arbitrary value, can be changed
     episode_positive_feedback_event: Optional[str] = None  # None defaults to overall reward
     episode_negative_feedback_event: Optional[str] = None  # None defaults to overall reward
@@ -293,7 +268,7 @@ class PPOConfig:
     feedback_surprise_amp_gain: Optional[float] = 0.35 # Tune as needed, will depend on neurons
     feedback_surprise_freq_max_scale: Optional[float] = 2.0 # Tune as needed, will depend on neurons
     feedback_surprise_amp_max_scale: Optional[float] = 1.5 # Tune as needed, will depend on neurons
-    enemy_distance_normalization: float = 1312.0 # Already calibrated, do not change
+    enemy_distance_normalization: float = 1024.0 # Already calibrated, do not change
 
     def __post_init__(self):
         """Initialize CL SDK channel sets (required)."""
@@ -311,6 +286,7 @@ class PPOConfig:
         self.turn_left_channels_set = None
         self.turn_right_channels_set = None
         self.attack_channels_set = None
+        self.speed_channels_set = None
         self.event_feedback_channel_sets = {
             name: None for name in self.event_feedback_settings.keys()
         }
@@ -608,17 +584,13 @@ class LinearReadoutHead(nn.Module):
 
 
 class DecoderNetwork(nn.Module):
-    """
-    Decoder with separate heads for movement, camera delta, and attack.
+    """Decoder that emits logits over the full combinatorial action space."""
 
-    Implemented as direct linear readouts.
-    """
-
-    def __init__(self, spike_feature_dim: int, config: PPOConfig):
+    def __init__(self, spike_feature_dim: int, config: PPOConfig, num_joint_actions: int):
         super().__init__()
         self.config = config
         self.use_mlp = bool(getattr(config, 'decoder_use_mlp', False))
-        self._head_names = ['forward', 'strafe', 'camera', 'attack', 'discrete']
+        self._head_names = ['joint']
         self._zero_bias_enabled = bool(getattr(config, 'decoder_zero_bias', False))
 
         if self.use_mlp:
@@ -632,27 +604,13 @@ class DecoderNetwork(nn.Module):
                 nn.SiLU()
             )
             feature_dim = mid_hidden
-            self.forward_head = nn.Linear(feature_dim, 3)
-            self.strafe_head = nn.Linear(feature_dim, 3)
-            self.camera_head = nn.Linear(feature_dim, 3)
-            self.attack_head = nn.Linear(feature_dim, 1)
-            self.discrete_head = nn.Linear(feature_dim, 8)
+            self.joint_head = nn.Linear(feature_dim, num_joint_actions)
         else:
             enforce_positive = getattr(config, 'decoder_enforce_nonnegative', True)
             self.shared = None
-            self.forward_head = LinearReadoutHead(spike_feature_dim, 3, enforce_positive)
-            self.strafe_head = LinearReadoutHead(spike_feature_dim, 3, enforce_positive)
-            self.camera_head = LinearReadoutHead(spike_feature_dim, 3, enforce_positive)
-            self.attack_head = LinearReadoutHead(spike_feature_dim, 1, enforce_positive)
-            self.discrete_head = LinearReadoutHead(spike_feature_dim, 8, enforce_positive)
+            self.joint_head = LinearReadoutHead(spike_feature_dim, num_joint_actions, enforce_positive)
 
-        self.heads = {
-            'forward': self.forward_head,
-            'strafe': self.strafe_head,
-            'camera': self.camera_head,
-            'attack': self.attack_head,
-            'discrete': self.discrete_head
-        }
+        self.heads = {'joint': self.joint_head}
 
         if self._zero_bias_enabled:
             self._zero_decoder_biases()
@@ -662,17 +620,9 @@ class DecoderNetwork(nn.Module):
             for param in self.parameters():
                 param.requires_grad = False
 
-    def forward(
-        self,
-        spike_features: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, spike_features: torch.Tensor) -> torch.Tensor:
         head_input = self.shared(spike_features) if self.use_mlp else spike_features
-        forward_logits = self.forward_head(head_input)
-        strafe_logits = self.strafe_head(head_input)
-        camera_logits = self.camera_head(head_input)
-        attack_logits = self.attack_head(head_input)
-        discrete_logits = self.discrete_head(head_input)
-        return forward_logits, strafe_logits, camera_logits, attack_logits, discrete_logits
+        return self.joint_head(head_input)
 
     def l2_penalties(self, effective: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         param_ref = next(self.parameters(), None)
@@ -792,12 +742,41 @@ class PPOPolicy(nn.Module):
         self.forward_options = ['none', 'forward', 'backward']
         self.strafe_options = ['none', 'left', 'right']
         self.camera_options = ['none', 'turn_left', 'turn_right']
+        self.attack_options = ['idle', 'attack']
+        self.speed_options = ['off']  # Speed action removed - always off
+
+        self.combinatorial_action_defs: List[Dict[str, Any]] = []
+        for forward_idx, forward_name in enumerate(self.forward_options):
+            for strafe_idx, strafe_name in enumerate(self.strafe_options):
+                for turn_idx, turn_name in enumerate(self.camera_options):
+                    for attack_idx, attack_name in enumerate(self.attack_options):
+                        for speed_idx, speed_name in enumerate(self.speed_options):
+                            # Constraint: When attacking, only allow stationary (no movement/turning)
+                            if attack_idx == 1:  # attack
+                                if forward_idx != 0 or strafe_idx != 0 or turn_idx != 0:
+                                    continue  # Skip this combination
+
+                            action_name = (
+                                f"{forward_name}_{strafe_name}_{turn_name}_"
+                                f"{attack_name}_{speed_name}"
+                            )
+                            self.combinatorial_action_defs.append({
+                                'name': action_name,
+                                'forward': forward_idx,
+                                'strafe': strafe_idx,
+                                'turn': turn_idx,
+                                'attack': attack_idx,
+                                'speed': speed_idx,
+                            })
+        self.num_joint_actions = len(self.combinatorial_action_defs)
+        print(f"[INFO] Action space size: {self.num_joint_actions} (attack requires stationary)")
 
         # Components
         self.encoder = EncoderNetwork(obs_dim, config, num_channel_sets=self.num_channel_sets)
         self.decoder = DecoderNetwork(
             spike_feature_dim=self.num_channel_sets,
-            config=config
+            config=config,
+            num_joint_actions=self.num_joint_actions
         )
         self.value_net = ValueNetwork(obs_dim, config)
         self._stim_cache = LRUCache(maxsize=256)
@@ -808,36 +787,32 @@ class PPOPolicy(nn.Module):
             for ch in channel_list:
                 self.channel_lookup[ch] = idx
 
-        self.discrete_action_defs = [
-            {'name': 'noop', 'forward': 0, 'strafe': 0, 'turn': 0, 'attack': 0},
-            {'name': 'forward', 'forward': 1, 'strafe': 0, 'turn': 0, 'attack': 0},
-            {'name': 'backward', 'forward': 2, 'strafe': 0, 'turn': 0, 'attack': 0},
-            {'name': 'strafe_left', 'forward': 0, 'strafe': 1, 'turn': 0, 'attack': 0},
-            {'name': 'strafe_right', 'forward': 0, 'strafe': 2, 'turn': 0, 'attack': 0},
-            {'name': 'turn_left', 'forward': 0, 'strafe': 0, 'turn': 1, 'attack': 0},
-            {'name': 'turn_right', 'forward': 0, 'strafe': 0, 'turn': 2, 'attack': 0},
-            {'name': 'attack', 'forward': 0, 'strafe': 0, 'turn': 0, 'attack': 1},
-        ]
-        forward_codes = torch.tensor([action['forward'] for action in self.discrete_action_defs], dtype=torch.long)
-        strafe_codes = torch.tensor([action['strafe'] for action in self.discrete_action_defs], dtype=torch.long)
+        forward_codes = torch.tensor([action['forward'] for action in self.combinatorial_action_defs], dtype=torch.long)
+        strafe_codes = torch.tensor([action['strafe'] for action in self.combinatorial_action_defs], dtype=torch.long)
         turn_codes = torch.tensor(
-            [action['turn'] for action in self.discrete_action_defs],
+            [action['turn'] for action in self.combinatorial_action_defs],
             dtype=torch.long
         )
         attack_codes = torch.tensor(
-            [action['attack'] for action in self.discrete_action_defs],
+            [action['attack'] for action in self.combinatorial_action_defs],
             dtype=torch.long
         )
-        self.register_buffer('discrete_forward_map', forward_codes, persistent=False)
-        self.register_buffer('discrete_strafe_map', strafe_codes, persistent=False)
-        self.register_buffer('discrete_turn_map', turn_codes, persistent=False)
-        self.register_buffer('discrete_attack_map', attack_codes, persistent=False)
+        speed_codes = torch.tensor(
+            [action['speed'] for action in self.combinatorial_action_defs],
+            dtype=torch.long
+        )
+        self.register_buffer('joint_forward_map', forward_codes, persistent=False)
+        self.register_buffer('joint_strafe_map', strafe_codes, persistent=False)
+        self.register_buffer('joint_turn_map', turn_codes, persistent=False)
+        self.register_buffer('joint_attack_map', attack_codes, persistent=False)
+        self.register_buffer('joint_speed_map', speed_codes, persistent=False)
+        self._debug_joint_prints = 0
 
     def decode_spikes_to_action(
         self,
         spike_features: torch.Tensor,
         deterministic: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Decode spike features to actions.
 
@@ -850,61 +825,59 @@ class PPOPolicy(nn.Module):
             strafe_actions: (batch_size,) categorical over strafe left/right/idle
             camera_actions: (batch_size,) discrete turn options (0=none, 1=left, 2=right)
             attack_actions: (batch_size,)
+            speed_actions: (batch_size,)
             log_probs: (batch_size,)
             entropy: (batch_size,)
         """
-        forward_logits, strafe_logits, camera_logits, attack_logits, discrete_logits = self.decoder(spike_features)
-        attack_dist = Bernoulli(logits=attack_logits.squeeze(-1))
-
-        if getattr(self.config, 'use_discrete_action_set', False):
-            discrete_dist = Categorical(logits=discrete_logits)
-            if deterministic:
-                discrete_actions = discrete_logits.argmax(dim=-1)
-            else:
-                discrete_actions = discrete_dist.sample()
-
-            forward_map = self.discrete_forward_map.to(spike_features.device)
-            strafe_map = self.discrete_strafe_map.to(spike_features.device)
-            turn_map = self.discrete_turn_map.to(spike_features.device)
-            attack_map = self.discrete_attack_map.to(spike_features.device)
-
-            forward_actions = forward_map[discrete_actions]
-            strafe_actions = strafe_map[discrete_actions]
-            camera_actions = turn_map[discrete_actions]
-            attack_actions = attack_map[discrete_actions]
-
-            log_probs = discrete_dist.log_prob(discrete_actions)
-            entropy = discrete_dist.entropy()
+        joint_logits = self.decoder(spike_features)
+        joint_dist = Categorical(logits=joint_logits)
+        if deterministic:
+            joint_actions = joint_logits.argmax(dim=-1)
         else:
-            forward_dist = Categorical(logits=forward_logits)
-            strafe_dist = Categorical(logits=strafe_logits)
-            camera_dist = Categorical(logits=camera_logits)
+            joint_actions = joint_dist.sample()
 
-            if deterministic:
-                forward_actions = forward_logits.argmax(dim=-1)
-                strafe_actions = strafe_logits.argmax(dim=-1)
-                camera_actions = camera_logits.argmax(dim=-1)
-                attack_actions = (attack_logits.squeeze(-1) > 0).long()
-            else:
-                forward_actions = forward_dist.sample()
-                strafe_actions = strafe_dist.sample()
-                camera_actions = camera_dist.sample()
-                attack_actions = attack_dist.sample().long()
+        forward_map = self.joint_forward_map.to(spike_features.device)
+        strafe_map = self.joint_strafe_map.to(spike_features.device)
+        turn_map = self.joint_turn_map.to(spike_features.device)
+        attack_map = self.joint_attack_map.to(spike_features.device)
+        speed_map = self.joint_speed_map.to(spike_features.device)
 
-            log_probs = (
-                forward_dist.log_prob(forward_actions)
-                + strafe_dist.log_prob(strafe_actions)
-                + camera_dist.log_prob(camera_actions)
-                + attack_dist.log_prob(attack_actions.float())
-            )
-            entropy = (
-                forward_dist.entropy()
-                + strafe_dist.entropy()
-                + camera_dist.entropy()
-                + attack_dist.entropy()
-            )
+        forward_actions = forward_map[joint_actions]
+        strafe_actions = strafe_map[joint_actions]
+        camera_actions = turn_map[joint_actions]
+        attack_actions = attack_map[joint_actions]
+        speed_actions = speed_map[joint_actions]
 
-        return forward_actions, strafe_actions, camera_actions, attack_actions, log_probs, entropy
+        log_probs = joint_dist.log_prob(joint_actions)
+        entropy = joint_dist.entropy()
+
+        if getattr(self.config, 'debug_joint_actions', False):
+            limit = int(getattr(self.config, 'debug_joint_actions_limit', 50))
+            if self._debug_joint_prints < limit and joint_actions.numel() > 0:
+                sample_idx = 0
+                attack_ratio = float(attack_actions.float().mean().item())
+                joint_idx = int(joint_actions[sample_idx].item())
+                print(
+                    "[DEBUG] joint_action="
+                    f"{joint_idx} "
+                    f"(fwd={int(forward_actions[sample_idx])}, "
+                    f"strafe={int(strafe_actions[sample_idx])}, "
+                    f"turn={int(camera_actions[sample_idx])}, "
+                    f"attack={int(attack_actions[sample_idx])}, "
+                    f"speed={int(speed_actions[sample_idx])}) "
+                    f"| attack_ratio={attack_ratio:.2f}"
+                )
+                self._debug_joint_prints += 1
+
+        return (
+            forward_actions,
+            strafe_actions,
+            camera_actions,
+            attack_actions,
+            speed_actions,
+            log_probs,
+            entropy
+        )
 
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
         """Get value estimate for observations."""
@@ -943,6 +916,7 @@ class PPOPolicy(nn.Module):
         strafe_actions: torch.Tensor,
         camera_actions: torch.Tensor,
         attack_actions: torch.Tensor,
+        speed_actions: torch.Tensor,
         obs: torch.Tensor,
         stim_frequencies: Optional[torch.Tensor] = None,
         stim_amplitudes: Optional[torch.Tensor] = None
@@ -952,9 +926,12 @@ class PPOPolicy(nn.Module):
         Used during PPO update.
 
         Args:
-            spike_features: (batch_size, 4) spike counts from CL SDK
+            spike_features: (batch_size, num_channel_sets) spike counts from CL SDK
             forward_actions: categorical indices for forward/back/idle
             strafe_actions: categorical indices for strafe left/right/idle
+            camera_actions: discrete turn indices
+            attack_actions: binary attack selections
+            speed_actions: binary indices for slow/fast
             obs: (batch_size, obs_dim) observations (for value estimation)
 
         Returns:
@@ -962,44 +939,26 @@ class PPOPolicy(nn.Module):
             values: (batch_size, 1)
             entropy: (batch_size,)
         """
-        forward_logits, strafe_logits, camera_logits, attack_logits, discrete_logits = self.decoder(spike_features)
+        joint_logits = self.decoder(spike_features)
+        joint_dist = Categorical(logits=joint_logits)
+        forward_map = self.joint_forward_map.to(spike_features.device)
+        strafe_map = self.joint_strafe_map.to(spike_features.device)
+        turn_map = self.joint_turn_map.to(spike_features.device)
+        attack_map = self.joint_attack_map.to(spike_features.device)
+        speed_map = self.joint_speed_map.to(spike_features.device)
 
-        if getattr(self.config, 'use_discrete_action_set', False):
-            discrete_dist = Categorical(logits=discrete_logits)
-            forward_map = self.discrete_forward_map.to(spike_features.device)
-            strafe_map = self.discrete_strafe_map.to(spike_features.device)
-            turn_map = self.discrete_turn_map.to(spike_features.device)
-            attack_map = self.discrete_attack_map.to(spike_features.device)
+        forward_eq = forward_actions.unsqueeze(-1) == forward_map
+        strafe_eq = strafe_actions.unsqueeze(-1) == strafe_map
+        turn_eq = camera_actions.unsqueeze(-1) == turn_map
+        attack_eq = attack_actions.unsqueeze(-1) == attack_map
+        speed_eq = speed_actions.unsqueeze(-1) == speed_map
+        matches = forward_eq & strafe_eq & turn_eq & attack_eq & speed_eq
+        if not torch.all(matches.any(dim=-1)):
+            raise ValueError("Encountered action tuple without combinatorial mapping.")
+        joint_indices = matches.float().argmax(dim=-1)
 
-            forward_eq = forward_actions.unsqueeze(-1) == forward_map
-            strafe_eq = strafe_actions.unsqueeze(-1) == strafe_map
-            turn_eq = camera_actions.unsqueeze(-1) == turn_map
-            attack_eq = attack_actions.unsqueeze(-1) == attack_map
-            matches = forward_eq & strafe_eq & turn_eq & attack_eq
-            if not torch.all(matches.any(dim=-1)):
-                raise ValueError("Encountered action tuple without discrete mapping.")
-            discrete_indices = matches.float().argmax(dim=-1)
-
-            log_probs = discrete_dist.log_prob(discrete_indices)
-            entropy = discrete_dist.entropy()
-        else:
-            forward_dist = Categorical(logits=forward_logits)
-            strafe_dist = Categorical(logits=strafe_logits)
-            camera_dist = Categorical(logits=camera_logits)
-            attack_dist = Bernoulli(logits=attack_logits.squeeze(-1))
-
-            forward_log_prob = forward_dist.log_prob(forward_actions)
-            strafe_log_prob = strafe_dist.log_prob(strafe_actions)
-            camera_log_prob = camera_dist.log_prob(camera_actions)
-            attack_log_prob = attack_dist.log_prob(attack_actions.float())
-
-            log_probs = forward_log_prob + strafe_log_prob + camera_log_prob + attack_log_prob
-            entropy = (
-                forward_dist.entropy()
-                + strafe_dist.entropy()
-                + camera_dist.entropy()
-                + attack_dist.entropy()
-            )
+        log_probs = joint_dist.log_prob(joint_indices)
+        entropy = joint_dist.entropy()
         encoder_log_prob = torch.zeros_like(log_probs)
         encoder_entropy = torch.zeros_like(log_probs)
         if getattr(self.config, 'encoder_trainable', False):
@@ -1110,29 +1069,27 @@ class VizDoomEnv:
 
         self.game.init()
 
+        self.available_game_variables = list(self.game.get_available_game_variables())
+        self.game_var_to_index = {
+            var: idx for idx, var in enumerate(self.available_game_variables)
+        }
+
         self.buttons = list(self.game.get_available_buttons())
         self.num_actions = len(self.buttons)
         self.action_space_size = self.num_actions
         self.screen_width = self.game.get_screen_width()
         self.screen_height = self.game.get_screen_height()
 
-        self.wall_ray_count = int(getattr(config, 'wall_ray_count', 8))
-        self.wall_ray_max_range = int(getattr(config, 'wall_ray_max_range', 64))
-        self.wall_depth_max_distance = float(getattr(config, 'wall_depth_max_distance', 500.0))
+        # Enemy tracking
+        self.max_tracked_enemies = 5
         self.enemy_slot_map: Dict[int, int] = {}
 
         # Observation space configuration
-        # [pos_x, pos_y, killcount,
-        #  sin(player_angle), cos(player_angle),
-        #  health,
-        #  dist_to_armor, sin(armor_angle), cos(armor_angle),
-        #  ammo,
-        #  wall_rays...,                      (raycast distances)
-        #  enemy_dist_0, enemy_sin_0, enemy_cos_0, enemy_alive_0,
-        #  ... (per enemy up to max_tracked_enemies)]
-        self.max_tracked_enemies = 6
-        base_features = 10 + self.wall_ray_count  # base features + wall rays
-        self.scalar_feature_dim = base_features + self.max_tracked_enemies * 4
+        # [killcount, health, selected_weapon_ammo, position_x, position_y, sin(angle), cos(angle)]
+        # + [5 enemies × 8 features: dist, sin(angle_to), cos(angle_to), sin(enemy_facing), cos(enemy_facing), position_x, position_y, active_flag]
+        base_features = 7
+        enemy_features = self.max_tracked_enemies * 8  # 8 features per enemy (relative + absolute position + active flag)
+        self.scalar_feature_dim = base_features + enemy_features
 
         if getattr(config, 'encoder_use_cnn', False):
             self.cnn_downsample = max(1, int(getattr(config, 'encoder_cnn_downsample', 4)))
@@ -1155,62 +1112,83 @@ class VizDoomEnv:
             config.scalar_obs_dim = self.scalar_feature_dim
             config.cnn_obs_shape = None
 
+        self.ammo1_capacity = 25.0
+
         # Tracking
         self.episode_reward = 0
         self.episode_length = 0
-        self.prev_armor_distance = None
-        self.armor_collected = False
-        self.prev_health = 100.0
-        self.health_penalty_accum = 0.0
         self.last_state_health = 100.0
-        self.last_state_armor = 0.0
         self.last_state_ammo = 0.0
         self.last_state_killcount = 0.0
+        self.last_state_position_x = 0.0
+        self.last_state_position_y = 0.0
+        self.last_state_angle = 0.0
 
     def reset(self) -> np.ndarray:
         """Reset environment and return initial observation."""
         self.game.new_episode()
         self.episode_reward = 0
         self.episode_length = 0
-        self.prev_armor_distance = None
-        self.armor_collected = False
-        self.health_penalty_accum = 0.0
-        self.enemy_slot_map.clear()
+        self.enemy_slot_map.clear()  # Clear enemy tracking for new episode
 
         state = self.game.get_state()
-        health, armor = self._extract_health_armor(state)
-        self.prev_health = health
-        self.last_state_health = health
-        self.last_state_armor = armor
-        self.last_state_ammo = float(state.game_variables[6]) if state and len(state.game_variables) > 6 else 0.0
-        self.last_state_killcount = float(state.game_variables[3]) if state and len(state.game_variables) > 3 else 0.0
-        self.prev_armor_distance = self._armor_distance(state)
+        self.last_state_health = self._state_game_variable(
+            state,
+            GameVariable.HEALTH,
+            100.0
+        )
+        self.last_state_ammo = self._state_game_variable(
+            state,
+            GameVariable.SELECTED_WEAPON_AMMO,
+            0.0
+        )
+        self.last_state_killcount = self._state_game_variable(
+            state,
+            GameVariable.KILLCOUNT,
+            0.0
+        )
+        self.last_state_position_x = self._state_game_variable(
+            state,
+            GameVariable.POSITION_X,
+            0.0
+        )
+        self.last_state_position_y = self._state_game_variable(
+            state,
+            GameVariable.POSITION_Y,
+            0.0
+        )
+        self.last_state_angle = self._state_game_variable(
+            state,
+            GameVariable.ANGLE,
+            0.0
+        )
         return self._get_observation(state)
 
-    def step(self, action: Tuple[int, int, int, int]) -> Tuple[np.ndarray, float, bool, Dict, None | np.ndarray]:
+    def step(self, action: Tuple[int, int, int, int, int]) -> Tuple[np.ndarray, float, bool, Dict, None | np.ndarray]:
         """
         Execute action and return (observation, reward, done, info, screen_buffer).
 
         Args:
-            action: Tuple of (forward_idx, strafe_idx, turn_idx, attack_flag)
+            action: Tuple of (forward_idx, strafe_idx, turn_idx, attack_flag, speed_flag)
         """
         forward_choice = 0
         strafe_choice = 0
         turn_choice = 0
         attack_flag = False
+        speed_choice = 0
 
+        # Normalize action tuple lengths for backward compatibility
         if isinstance(action, tuple):
-            if len(action) == 4:
-                forward_choice, strafe_choice, camera_action, attack_action = action
-            elif len(action) == 3:
-                forward_choice, camera_action, attack_action = action
-                strafe_choice = 0
-            else:
-                forward_choice, camera_action = action[0], action[1] if len(action) > 1 else 0
-                attack_action = action[2] if len(action) > 2 else 0
-                strafe_choice = 0
+            forward_choice = action[0] if len(action) > 0 else 0
+            strafe_choice = action[1] if len(action) > 1 else 0
+            camera_action = action[2] if len(action) > 2 else 0
+            attack_action = action[3] if len(action) > 3 else 0
+            speed_choice = action[4] if len(action) > 4 else 0
         else:
-            forward_choice, strafe_choice, camera_action, attack_action = int(action), 0, 0, 0
+            camera_action = 0
+            attack_action = 0
+            speed_choice = 0
+            forward_choice = int(action)
 
         forward_choice = int(np.clip(int(forward_choice), 0, 2))
         strafe_choice = int(np.clip(int(strafe_choice), 0, 2))
@@ -1219,6 +1197,7 @@ class VizDoomEnv:
         else:
             turn_choice = 0
         attack_flag = bool(attack_action)
+        speed_choice = int(np.clip(int(speed_choice), 0, 1))
 
         action_vector = np.zeros(len(self.buttons), dtype=np.float32)
 
@@ -1233,6 +1212,7 @@ class VizDoomEnv:
         }
 
         button_index = {button: idx for idx, button in enumerate(self.buttons)}
+        state_before = self.game.get_state()
 
         if forward_choice in forward_to_button:
             btn = forward_to_button[forward_choice]
@@ -1262,12 +1242,22 @@ class VizDoomEnv:
 
         if attack_flag and Button.ATTACK in button_index:
             action_vector[button_index[Button.ATTACK]] = 1
+
+        if speed_choice == 1 and Button.SPEED in button_index:
+            action_vector[button_index[Button.SPEED]] = 1
         # Execute action
-        state_before = self.game.get_state()
-        armor_available_before = self._is_armor_present(state_before)
-        health_before, armor_before_value = self._extract_health_armor(state_before)
+        health_before, _ = self._extract_health_armor(state_before)
+        ammo_before = self._state_game_variable(
+            state_before,
+            GameVariable.SELECTED_WEAPON_AMMO,
+            self.last_state_ammo
+        )
+        killcount_before = self._state_game_variable(
+            state_before,
+            GameVariable.KILLCOUNT,
+            self.last_state_killcount
+        )
         self.last_state_health = health_before
-        self.last_state_armor = armor_before_value
         self.game.set_action(action_vector)
         self.game.advance_action(4) # This can be changed but most stable RL implementation advance 4 ticks at a time
 
@@ -1276,166 +1266,134 @@ class VizDoomEnv:
         screen_buffer = getattr(state, "screen_buffer", None) # VizDoom screen buffer is (channels, H, W)
         done = self.game.is_episode_finished()
 
-        game_reward = self.game.get_last_reward()
-        custom_reward = 0.0
-        pickup_reward = 0.0
-        health_penalty = 0.0
-        aim_alignment_reward = 0.0
-        movement_reward = 0.0
-        ammo_penalty = 0.0
-        enemy_kill_event = False
-        armor_pickup_event = False
-        took_damage_event = False
-        ammo_waste_event = False
-        move_closer_event = False
-        move_farther_event = False
+        current_health, _ = self._extract_health_armor(state)
+        ammo_after = self._state_game_variable(
+            state,
+            GameVariable.SELECTED_WEAPON_AMMO,
+            ammo_before
+        )
+        killcount_after = self._state_game_variable(
+            state,
+            GameVariable.KILLCOUNT,
+            killcount_before
+        )
+        damage_taken = max(0.0, health_before - current_health)
+        ammo_spent = max(0.0, ammo_before - ammo_after)
+        kills_delta = max(0.0, killcount_after - killcount_before)
+        kill_reward = kills_delta * 100.0
+        damage_penalty = -damage_taken * 5.0
+        ammo_penalty = -ammo_spent * 10.0
+        reward = kill_reward + damage_penalty + ammo_penalty
+        enemy_kill_event = kills_delta > 0.0
+        took_damage_event = damage_taken > 0.0
+        ammo_waste_event = ammo_spent > 0.0
 
-        current_health, current_armor = self._extract_health_armor(state)
-        armor_distance = self._armor_distance(state) if state is not None else None
-
+        # Add remaining HP penalty when episode ends
         if done:
+            remaining_hp_penalty = -current_health * 5.0
+            reward += remaining_hp_penalty
             obs = np.zeros(self.obs_dim, dtype=np.float32)
-            if self.last_state_health <= 0 or self.last_state_armor <= 0:
-                pending = max(0.0, 100.0 - self.health_penalty_accum)
-                if pending > 0:
-                    custom_reward = -pending
-                    self.health_penalty_accum += pending
-                    health_penalty = custom_reward
         else:
             obs = self._get_observation(state)
 
-            # Compute reward
-            health_penalty = self._compute_health_penalty(state)
-            if self.config.simplified_reward:
-                custom_reward = max(-1000.0, 10.0 * health_penalty)
-            else:
-                aim_alignment_reward = self._compute_aim_alignment_reward(state)
-                movement_reward = self._compute_movement_reward(state)
-                custom_reward = health_penalty + aim_alignment_reward + movement_reward
+        # Update tracked state variables
+        self.last_state_health = current_health
+        self.last_state_ammo = ammo_after
+        self.last_state_killcount = killcount_after
 
-        armor_gain = current_armor - armor_before_value
-        if (
-            armor_available_before
-            and not self.armor_collected
-            and armor_gain > 1.0
-        ):
-            pickup_reward = self.config.armor_terminal_reward
-            self.armor_collected = True
-
-        reward = game_reward + custom_reward + pickup_reward
-
-        if not done and state is not None:
-            self.last_state_health = current_health
-            self.last_state_armor = current_armor
-            ammo_before = float(state_before.game_variables[6]) if (state_before and len(state_before.game_variables) > 6) else self.last_state_ammo
-            ammo_after = float(state.game_variables[6]) if (state and len(state.game_variables) > 6) else ammo_before
-            killcount_before = float(state_before.game_variables[3]) if (state_before and len(state_before.game_variables) > 3) else self.last_state_killcount
-            killcount_after = float(state.game_variables[3]) if (state and len(state.game_variables) > 3) else killcount_before
-            enemy_kill_event = killcount_after > killcount_before
-            took_damage_event = health_penalty < 0.0
-            if ammo_after < ammo_before and killcount_after <= killcount_before:
-                ammo_penalty = -5.0
-                custom_reward += ammo_penalty
-                ammo_waste_event = True
-            prev_distance = self.prev_armor_distance
-            if armor_distance is not None:
-                threshold = float(getattr(self.config, 'event_movement_distance_threshold', 10.0))
-                if prev_distance is not None:
-                    delta = prev_distance - armor_distance
-                    if delta > threshold:
-                        move_closer_event = True
-                    elif delta < -threshold:
-                        move_farther_event = True
-            self.last_state_ammo = ammo_after
-            self.last_state_killcount = killcount_after
-        else:
-            self.last_state_health = current_health
-            self.last_state_armor = current_armor
-
-        if armor_distance is not None:
-            self.prev_armor_distance = armor_distance
-        elif not done:
-            self.prev_armor_distance = None
-
-        armor_pickup_event = pickup_reward > 0.0
+        # Update position and angle tracking
+        if state is not None:
+            self.last_state_position_x = self._state_game_variable(state, GameVariable.POSITION_X, self.last_state_position_x)
+            self.last_state_position_y = self._state_game_variable(state, GameVariable.POSITION_Y, self.last_state_position_y)
+            self.last_state_angle = self._state_game_variable(state, GameVariable.ANGLE, self.last_state_angle)
 
         self.episode_reward += reward
         self.episode_length += 1
-        took_damage_event = took_damage_event or (health_penalty < 0.0)
-        armor_distance_final = self.prev_armor_distance if done else None
-        if done:
-            self.prev_armor_distance = None
 
         info = {
             'episode_reward': self.episode_reward if done else None,
             'episode_length': self.episode_length if done else None,
-            'game_reward': game_reward,
-            'custom_reward': custom_reward,
-            'armor_pickup_reward': pickup_reward,
-            'aim_alignment_reward': aim_alignment_reward,
-            'health_penalty': health_penalty,
-            'movement_reward': movement_reward,
+            'game_reward': reward,
+            'kill_reward': kill_reward,
+            'damage_penalty': damage_penalty,
             'ammo_penalty': ammo_penalty,
             'event_enemy_kill': enemy_kill_event,
             'event_took_damage': took_damage_event,
-            'event_armor_pickup': armor_pickup_event,
             'event_ammo_waste': ammo_waste_event,
-            'event_move_closer': move_closer_event,
-            'event_move_farther': move_farther_event,
-            'armor_distance_final': armor_distance_final
+            'killcount_final': self.last_state_killcount if done else None
         }
 
         return obs, reward, done, info, screen_buffer
+
+    def _state_game_variable(
+        self,
+        state: Optional[GameState],
+        var: GameVariable,
+        default: float = 0.0
+    ) -> float:
+        """Return a specific game variable either from the state or directly from the game."""
+        mapping = getattr(self, 'game_var_to_index', None)
+        if state is not None and mapping:
+            idx = mapping.get(var)
+            if idx is not None:
+                game_vars = getattr(state, 'game_variables', None)
+                if game_vars is not None and len(game_vars) > idx:
+                    return float(game_vars[idx])
+        game = getattr(self, 'game', None)
+        if game is not None:
+            try:
+                return float(game.get_game_variable(var))
+            except Exception:
+                return default
+        return default
 
     def _get_observation(self, state: GameState) -> np.ndarray:
         """Extract fully normalized observation vector for PPO."""
         if state is None:
             return np.zeros(self.obs_dim, dtype=np.float32)
 
-        gv = state.game_variables
-        MAP_EXTENT = 1312.0
-        KILLCOUNT_MAX = 6.0
-        AMMO_MAX = 52.0
+        HEALTH_MAX = 100.0
+        KILLCOUNT_MAX = 32.0
+        AMMO_MAX = max(1.0, float(getattr(self, 'ammo1_capacity', 25.0)))
+        POSITION_MAX = 1024.0  # Max position for normalization
 
-        # Safe extraction & base scaling
-        health_frac = np.clip((gv[0] if len(gv) > 0 else 0.0) / 100.0, 0.0, 1.0)
-        pos_x = np.clip((gv[1] if len(gv) > 1 else 0.0) / MAP_EXTENT, -1.5, 1.5)
-        pos_y = np.clip((gv[2] if len(gv) > 2 else 0.0) / MAP_EXTENT, -1.5, 1.5)
-        kills_frac = np.clip((gv[3] if len(gv) > 3 else 0.0) / KILLCOUNT_MAX, 0.0, 1.0)
-        angle_deg = (gv[4] if len(gv) > 4 else 0.0) % 360.0
-        ammo_frac = np.clip((gv[6] if len(gv) > 6 else 0.0) / AMMO_MAX, 0.0, 1.0)
+        health_raw = self._state_game_variable(state, GameVariable.HEALTH, self.last_state_health)
+        ammo_raw = self._state_game_variable(state, GameVariable.SELECTED_WEAPON_AMMO, self.last_state_ammo)
+        killcount_raw = self._state_game_variable(state, GameVariable.KILLCOUNT, self.last_state_killcount)
+        position_x_raw = self._state_game_variable(state, GameVariable.POSITION_X, self.last_state_position_x)
+        position_y_raw = self._state_game_variable(state, GameVariable.POSITION_Y, self.last_state_position_y)
+        angle_raw = self._state_game_variable(state, GameVariable.ANGLE, self.last_state_angle)
 
-        # Center bounded features to [-1,1]
+        health_frac = np.clip(health_raw / HEALTH_MAX, 0.0, 1.0)
+        ammo_frac = np.clip(ammo_raw / AMMO_MAX, 0.0, 1.0)
+        kills_frac = np.clip(killcount_raw / KILLCOUNT_MAX, 0.0, 1.0)
+
         health = health_frac * 2.0 - 1.0
+        ammo_norm = ammo_frac * 2.0 - 1.0
         kills = kills_frac * 2.0 - 1.0
-        ammo = ammo_frac * 2.0 - 1.0
 
-        # Global facing angle as sin/cos
-        angle_rad = np.deg2rad(angle_deg)
-        sin_a, cos_a = np.sin(angle_rad), np.cos(angle_rad)
+        # Normalize positions to [-1, 1]
+        position_x_norm = np.clip(position_x_raw / POSITION_MAX, -1.0, 1.0)
+        position_y_norm = np.clip(position_y_raw / POSITION_MAX, -1.0, 1.0)
 
-        # Armor features (in [-1,1])
-        armor_dist, armor_sin, armor_cos = self._get_armor_info(state)
+        # Convert angle to sin/cos (angle is in degrees)
+        angle_rad = np.deg2rad(angle_raw)
+        sin_angle = np.sin(angle_rad)
+        cos_angle = np.cos(angle_rad)
 
-        # Wall features (raycast from automap)
-        wall_ranges = self._extract_wall_ranges(state)
-        # print(wall_ranges)
-        # Enemy features (each entry in [-1,1])
-        enemy_features = self._get_enemy_features(state).flatten()
-
+        # Scalar features: kills, health, ammo, position_x, position_y, sin(angle), cos(angle)
         obs_components = [
-            pos_x,  # ~[-1.5, 1.5]
-            pos_y,  # ~[-1.5, 1.5]
             kills,  # [-1, 1]
-            sin_a,  # [-1, 1]
-            cos_a,  # [-1, 1]
             health,  # [-1, 1]
-            armor_dist,  # [-1, 1]
-            armor_sin,  # [-1, 1]
-            armor_cos,  # [-1, 1]
-            ammo  # [-1, 1]
+            ammo_norm,  # [-1, 1]
+            position_x_norm,  # [-1, 1]
+            position_y_norm,  # [-1, 1]
+            sin_angle,  # [-1, 1]
+            cos_angle  # [-1, 1]
         ]
-        obs_components.extend(wall_ranges.tolist())
+
+        # Add enemy features
+        enemy_features = self._get_enemy_features(state)
         obs_components.extend(enemy_features.tolist())
 
         scalar_vector = np.array(obs_components, dtype=np.float32)
@@ -1451,14 +1409,119 @@ class VizDoomEnv:
         return obs
 
     def _extract_health_armor(self, state: Optional[GameState]) -> Tuple[float, float]:
-        if state is None or not hasattr(state, 'game_variables') or len(state.game_variables) == 0:
-            armor_value = float(self.game.get_game_variable(GameVariable.ARMOR)) if hasattr(self, 'game') else 0.0
-            return self.prev_health if hasattr(self, 'prev_health') else 100.0, armor_value
+        """Return current health and armor with safe fallbacks."""
+        last_health = getattr(self, 'last_state_health', 100.0)
+        if state is None:
+            return last_health, 0.0
 
-        game_vars = state.game_variables
-        health = float(game_vars[0])
-        armor_value = float(self.game.get_game_variable(GameVariable.ARMOR))
-        return health, armor_value
+        health = self._state_game_variable(state, GameVariable.HEALTH, last_health)
+        return health, 0.0
+
+    def _update_enemy_slot_map(self, enemies: list):
+        """
+        Assign persistent slot indices to enemies.
+        Reuses slots when enemies disappear.
+        """
+        current_ids = {getattr(e, "id", None) for e in enemies if getattr(e, "id", None) is not None}
+
+        # Remove stale entries
+        stale_ids = set(self.enemy_slot_map.keys()) - current_ids
+        for stale_id in stale_ids:
+            del self.enemy_slot_map[stale_id]
+
+        # Assign new enemies to available slots
+        used_slots = set(self.enemy_slot_map.values())
+        available_slots = [i for i in range(self.max_tracked_enemies) if i not in used_slots]
+
+        for enemy in enemies:
+            enemy_id = getattr(enemy, "id", None)
+            if enemy_id is None or enemy_id in self.enemy_slot_map:
+                continue
+            if available_slots:
+                self.enemy_slot_map[enemy_id] = available_slots.pop(0)
+
+    def _get_enemy_features(self, state: GameState) -> np.ndarray:
+        """
+        Return stacked features for up to max_tracked_enemies.
+        Each enemy: [dist_norm, sin(angle_to), cos(angle_to), sin(enemy_facing), cos(enemy_facing), position_x_norm, position_y_norm, active_flag] in [-1,1].
+        Missing enemies default to [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] (far distance, center position, inactive).
+        """
+        features = np.zeros((self.max_tracked_enemies, 8), dtype=np.float32)
+        features[:, 0] = 1.0  # default far distance
+        features[:, 5] = 0.0  # default position_x (center)
+        features[:, 6] = 0.0  # default position_y (center)
+        features[:, 7] = 0.0  # default inactive (no enemy in slot)
+
+        if (
+            state is None
+            or not hasattr(state, "objects")
+            or not state.objects
+            or not hasattr(state, "game_variables")
+            or len(state.game_variables) < 3
+        ):
+            return features.flatten()
+
+        # Player position from game variables (POSITION_X, POSITION_Y are indices 0, 1)
+        player_pos = np.array([
+            self._state_game_variable(state, GameVariable.POSITION_X, self.last_state_position_x),
+            self._state_game_variable(state, GameVariable.POSITION_Y, self.last_state_position_y)
+        ], dtype=np.float32)
+
+        # Filter for only Imp enemies
+        filtered = {"DoomImp"}
+        enemies = [
+            obj for obj in state.objects
+            if obj is not None and getattr(obj, "name", None) in filtered
+        ]
+
+        if not enemies:
+            self.enemy_slot_map.clear()
+            return features.flatten()
+
+        self._update_enemy_slot_map(enemies)
+        max_dist = 1024.0  # Distance normalization constant
+        denom = max(1e-6, 0.5 * max_dist)
+
+        for enemy_obj in enemies:
+            enemy_id = getattr(enemy_obj, "id", None)
+            if enemy_id is None:
+                continue
+            slot_idx = self.enemy_slot_map.get(enemy_id)
+            if slot_idx is None or slot_idx >= self.max_tracked_enemies:
+                continue
+
+            # Enemy position
+            enemy_pos = np.array([enemy_obj.position_x, enemy_obj.position_y], dtype=np.float32)
+            dx, dy = enemy_pos - player_pos
+            distance = float(np.hypot(dx, dy))
+            dist_norm = float(np.tanh(distance / denom))
+
+            # Angle from player to enemy
+            angle_to = np.arctan2(dy, dx)
+            sin_angle_to = float(np.clip(np.sin(angle_to), -1.0, 1.0))
+            cos_angle_to = float(np.clip(np.cos(angle_to), -1.0, 1.0))
+
+            # Enemy facing direction
+            enemy_angle = getattr(enemy_obj, "angle", 0.0)
+            enemy_angle_rad = np.deg2rad(enemy_angle)
+            sin_enemy_facing = float(np.clip(np.sin(enemy_angle_rad), -1.0, 1.0))
+            cos_enemy_facing = float(np.clip(np.cos(enemy_angle_rad), -1.0, 1.0))
+
+            # Absolute enemy position (normalized to [-1, 1])
+            POSITION_MAX = 1024.0
+            enemy_x_norm = float(np.clip(enemy_obj.position_x / POSITION_MAX, -1.0, 1.0))
+            enemy_y_norm = float(np.clip(enemy_obj.position_y / POSITION_MAX, -1.0, 1.0))
+
+            features[slot_idx, 0] = dist_norm
+            features[slot_idx, 1] = sin_angle_to
+            features[slot_idx, 2] = cos_angle_to
+            features[slot_idx, 3] = sin_enemy_facing
+            features[slot_idx, 4] = cos_enemy_facing
+            features[slot_idx, 5] = enemy_x_norm
+            features[slot_idx, 6] = enemy_y_norm
+            features[slot_idx, 7] = 1.0  # active flag (enemy present in this slot)
+
+        return features.flatten()
 
     def _extract_cnn_features(self, state: Optional[GameState]) -> np.ndarray:
         if state is None:
@@ -1491,332 +1554,40 @@ class VizDoomEnv:
         image_norm = (image_ds / 255.0).astype(np.float32)
         return image_norm.reshape(-1)
 
-    def _find_nearest_enemy_positions(
-        self,
-        state: Optional[GameState]
-    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """Return player XY position and nearest enemy XY position if any."""
-        if (
-            state is None
-            or not hasattr(state, "objects")
-            or not state.objects
-            or not hasattr(state, "game_variables")
-            or len(state.game_variables) < 3
-        ):
-            return None
-
-        player_pos = np.array(state.game_variables[1:3], dtype=np.float32)
-
-        filtered = {"ChaingunGuy", "Zombieman", "ShotgunGuy"} # Manual filter for the actual enemies
-        enemies = [
-            obj for obj in state.objects
-            if obj is not None and getattr(obj, "name", None) in filtered
-        ]
-
-        if not enemies:
-            return None
-
-        def _distance_sq(obj) -> float:
-            dx = obj.position_x - player_pos[0]
-            dy = obj.position_y - player_pos[1]
-            return dx * dx + dy * dy
-
-        nearest = min(enemies, key=_distance_sq)
-        enemy_pos = np.array([nearest.position_x, nearest.position_y], dtype=np.float32)
-        return player_pos, enemy_pos
-
-    def _nearest_enemy_distance(self, state: Optional[GameState]) -> Optional[float]:
-        positions = self._find_nearest_enemy_positions(state)
-        if positions is None:
-            return None
-        player_pos, enemy_pos = positions
-        return float(np.linalg.norm(enemy_pos - player_pos))
-
-    def _update_enemy_slot_map(self, enemies: List[Any]) -> None:
-        if not enemies:
-            self.enemy_slot_map.clear()
-            return
-
-        active_ids = set()
-        for obj in enemies:
-            enemy_id = getattr(obj, "id", None)
-            if enemy_id is None:
-                continue
-            active_ids.add(enemy_id)
-            if enemy_id in self.enemy_slot_map:
-                continue
-            available_slots = [
-                slot for slot in range(self.max_tracked_enemies)
-                if slot not in self.enemy_slot_map.values()
-            ]
-            if not available_slots:
-                continue
-            self.enemy_slot_map[enemy_id] = available_slots[0]
-
-        stale_ids = [enemy_id for enemy_id in self.enemy_slot_map if enemy_id not in active_ids]
-        for enemy_id in stale_ids:
-            del self.enemy_slot_map[enemy_id]
-
-    def _get_enemy_features(self, state: GameState) -> np.ndarray:
-        """
-        Return stacked features for up to max_tracked_enemies.
-        Each row: [dist_norm, sin(angle), cos(angle), alive_flag] in [-1,1].
-        Missing enemies default to [1.0, 0.0, 0.0, 0.0].
-        """
-        features = np.zeros((self.max_tracked_enemies, 4), dtype=np.float32)
-        features[:, 0] = 1.0  # default far distance
-
-        if (
-            state is None
-            or not hasattr(state, "objects")
-            or not state.objects
-            or not hasattr(state, "game_variables")
-            or len(state.game_variables) < 3
-        ):
-            return features
-
-        player_pos = np.array(state.game_variables[1:3], dtype=np.float32)
-
-        filtered = {"ChaingunGuy", "Zombieman", "ShotgunGuy"}
-        enemies = [
-            obj for obj in state.objects
-            if obj is not None and getattr(obj, "name", None) in filtered
-        ]
-
-        if not enemies:
-            self.enemy_slot_map.clear()
-            return features
-
-        self._update_enemy_slot_map(enemies)
-        max_dist = float(getattr(self.config, "enemy_distance_normalization", 1312.0))
-        denom = max(1e-6, 0.5 * max_dist)
-
-        for enemy_obj in enemies:
-            enemy_id = getattr(enemy_obj, "id", None)
-            if enemy_id is None:
-                continue
-            slot_idx = self.enemy_slot_map.get(enemy_id)
-            if slot_idx is None or slot_idx >= self.max_tracked_enemies:
-                continue
-
-            enemy_pos = np.array([enemy_obj.position_x, enemy_obj.position_y], dtype=np.float32)
-            dx, dy = enemy_pos - player_pos
-            distance = float(np.hypot(dx, dy))
-            dist_norm = float(np.tanh(distance / denom))
-            angle = np.arctan2(dy, dx)
-            sin_a, cos_a = np.sin(angle), np.cos(angle)
-
-            features[slot_idx, 0] = dist_norm
-            features[slot_idx, 1] = float(np.clip(sin_a, -1.0, 1.0))
-            features[slot_idx, 2] = float(np.clip(cos_a, -1.0, 1.0))
-            features[slot_idx, 3] = 1.0
-
-        return features
-
-    def _extract_wall_ranges(self, state: Optional[GameState]) -> np.ndarray:
-        num_rays = max(1, self.wall_ray_count)
-        ranges = np.ones(num_rays, dtype=np.float32)
-        if state is None or not hasattr(state, 'depth_buffer'):
-            return ranges
-
-        depth_buffer = state.depth_buffer
-        if depth_buffer is None or len(depth_buffer) == 0:
-            return ranges
-
-        try:
-            depth_map = np.array(depth_buffer, dtype=np.float32).reshape(self.screen_height, self.screen_width)
-        except ValueError:
-            return ranges
-
-        max_distance = max(1e-3, self.wall_depth_max_distance)
-        columns = np.linspace(0, self.screen_width - 1, num_rays, dtype=int)
-        horizon_row = min(self.screen_height - 1, int(self.screen_height * 0.6))
-
-        for idx, col in enumerate(columns):
-            column_depth = depth_map[:horizon_row, col]
-            valid = column_depth[column_depth > 0.0]
-            if valid.size == 0:
-                distance = max_distance
-            else:
-                distance = float(np.clip(valid.min(), 0.0, max_distance))
-            ranges[idx] = distance / max_distance
-
-        return ranges
-
-    def _get_armor_info(self, state: GameState) -> Tuple[float, float, float]:
-        """Return tanh-normalized distance and angle (sin/cos) to armor in [-1,1]."""
-        # No objects or state -> no armor info
-        if state is None or not hasattr(state, "objects") or len(state.objects) < 2:
-            return 1.0, 0.0, 1.0
-
-        try:
-            guy_pos = np.array(state.game_variables[1:3], dtype=np.float32)
-            armor_obj = next(obj for obj in state.objects if obj.name == "GreenArmor")
-            armor_pos = np.array([armor_obj.position_x, armor_obj.position_y], dtype=np.float32)
-
-            # Distance normalization (smooth bounded)
-            distance = np.linalg.norm(guy_pos - armor_pos)
-            MAX_DIST = 1312.0  # consistent with map extent
-            dist_norm = np.tanh(distance / (0.5 * MAX_DIST))  # in [-1,1]
-
-            # Angle encoding
-            dx, dy = armor_pos - guy_pos
-            angle = np.arctan2(dy, dx)
-            sin_a, cos_a = np.sin(angle), np.cos(angle)
-
-            return float(dist_norm), float(sin_a), float(cos_a)
-
-        except (StopIteration, IndexError, AttributeError):
-            # Fallback: no armor found
-            return 1.0, 0.0, 1.0
-
-    def _find_armor_position(self, state: Optional[GameState]) -> Optional[np.ndarray]:
-        """Return armor XY position if present."""
-        if (
-            state is None
-            or not hasattr(state, "objects")
-            or not state.objects
-        ):
-            return None
-
-        try:
-            armor_obj = next(obj for obj in state.objects if obj.name == "GreenArmor")
-        except StopIteration:
-            return None
-
-        return np.array([armor_obj.position_x, armor_obj.position_y], dtype=np.float32)
-
-    def _armor_distance(self, state: Optional[GameState]) -> Optional[float]:
-        """Return distance from player to armor if present."""
-        if (
-            state is None
-            or not hasattr(state, "game_variables")
-            or len(state.game_variables) < 3
-        ):
-            return None
-
-        armor_pos = self._find_armor_position(state)
-        if armor_pos is None:
-            return None
-
-        player_pos = np.array(state.game_variables[1:3], dtype=np.float32)
-        return float(np.linalg.norm(armor_pos - player_pos))
-
-    def _compute_health_penalty(self, state: GameState) -> float:
-        """Penalty for losing health."""
-        if state is None or len(state.game_variables) == 0:
-            return 0.0
-
-        current_health = float(state.game_variables[0])
-        if self.prev_health is None:
-            self.prev_health = current_health
-            return 0.0
-
-        health_drop = max(0.0, self.prev_health - current_health)
-        self.prev_health = current_health
-
-        if health_drop <= 0.0:
-            return 0.0
-
-        max_penalty_left = max(0.0, 100.0 - getattr(self, 'health_penalty_accum', 0.0))
-        penalty = min(health_drop, max_penalty_left)
-        self.health_penalty_accum = getattr(self, 'health_penalty_accum', 0.0) + penalty
-        return -penalty
-
-    def _compute_aim_alignment_reward(self, state: GameState) -> float:
-        """
-        Penalize large angular deviations and provide a small bonus when nearly aligned.
-        Negative reward discourages looking away; positive reward (when enabled) grows
-        as the view approaches perfect alignment with the target.
-        """
-        if (
-            state is None
-            or self.config.aim_alignment_gain <= 0.0
-            or not hasattr(state, "game_variables")
-            or len(state.game_variables) < 5
-        ):
-            return 0.0
-
-        max_distance = float(getattr(self.config, "aim_alignment_max_distance", 250.0))
-
-        player_pos = np.array(state.game_variables[1:3], dtype=np.float32)
-        player_angle_deg = float(state.game_variables[4])  # VizDoom yaw in degrees
-
-        target_pos = None
-
-        positions = self._find_nearest_enemy_positions(state)
-        if positions is not None:
-            enemy_player_pos, enemy_pos = positions
-            enemy_distance = float(np.linalg.norm(enemy_pos - enemy_player_pos))
-            if enemy_distance <= max_distance:
-                player_pos = enemy_player_pos
-                target_pos = enemy_pos
-
-        if target_pos is None:
-            armor_pos = self._find_armor_position(state)
-            if armor_pos is None:
-                return 0.0
-            # armor_distance = float(np.linalg.norm(armor_pos - player_pos))
-            target_pos = armor_pos
-
-        dx, dy = target_pos - player_pos
-        if dx == 0.0 and dy == 0.0:
-            return 0.0
-
-        target_angle_deg = float(np.degrees(np.arctan2(dy, dx)))
-        angle_diff = (player_angle_deg - target_angle_deg + 180.0) % 360.0 - 180.0
-        angle_diff_rad = np.deg2rad(angle_diff)
-        alignment = np.cos(angle_diff_rad)
-
-        penalty = self.config.aim_alignment_gain * (alignment - 1.0)
-        min_penalty = -2.0 * self.config.aim_alignment_gain
-        if penalty < min_penalty:
-            penalty = min_penalty
-
-        bonus = 0.0
-        bonus_deg = float(getattr(self.config, "aim_alignment_bonus_deg", 0.0))
-        bonus_scale = float(getattr(self.config, "aim_alignment_bonus", 0.0))
-        if bonus_scale > 0.0 and bonus_deg > 0.0:
-            abs_diff = abs(angle_diff)
-            if abs_diff <= bonus_deg:
-                window = max(bonus_deg, 1e-6)
-                proximity = 1.0 - (abs_diff / window)
-                bonus = bonus_scale * (proximity ** 2)
-        # print(penalty + bonus)
-        return float(penalty + bonus)
-
-    def _compute_movement_reward(self, state: GameState) -> float:
-        """
-        Encourage consistent movement by rewarding planar speed.
-        Reward magnitude scales with velocity magnitude.
-        """
-        scale = float(getattr(self.config, "movement_velocity_reward_scale", 0.0))
-        if (
-            scale <= 0.0
-            or state is None
-            or not hasattr(state, "game_variables")
-            or len(state.game_variables) < 9
-        ):
-            return 0.0
-
-        vx = float(state.game_variables[7])
-        vy = float(state.game_variables[8])
-        speed = float(np.hypot(vx, vy))
-        if speed <= 0.0:
-            return 0.0
-
-        return scale * speed
+    # NOTE: _extract_wall_ranges method removed - wall rays disabled
+    # def _extract_wall_ranges(self, state: Optional[GameState]) -> np.ndarray:
+    #     num_rays = max(1, self.wall_ray_count)
+    #     ranges = np.ones(num_rays, dtype=np.float32)
+    #     if state is None or not hasattr(state, 'depth_buffer'):
+    #         return ranges
+    #
+    #     depth_buffer = state.depth_buffer
+    #     if depth_buffer is None or len(depth_buffer) == 0:
+    #         return ranges
+    #
+    #     try:
+    #         depth_map = np.array(depth_buffer, dtype=np.float32).reshape(self.screen_height, self.screen_width)
+    #     except ValueError:
+    #         return ranges
+    #
+    #     max_distance = max(1e-3, self.wall_depth_max_distance)
+    #     columns = np.linspace(0, self.screen_width - 1, num_rays, dtype=int)
+    #     horizon_row = min(self.screen_height - 1, int(self.screen_height * 0.6))
+    #
+    #     for idx, col in enumerate(columns):
+    #         column_depth = depth_map[:horizon_row, col]
+    #         valid = column_depth[column_depth > 0.0]
+    #         if valid.size == 0:
+    #             distance = max_distance
+    #         else:
+    #             distance = float(np.clip(valid.min(), 0.0, max_distance))
+    #         ranges[idx] = distance / max_distance
+    #
+    #     return ranges
 
     def close(self):
         """Clean up resources."""
         self.game.close()
-
-    def _is_armor_present(self, state: Optional[GameState]) -> bool:
-        """Check if the Green Armor is present in the current game state."""
-        if state is None or not state.objects:
-            return False
-        return any(obj.name == "GreenArmor" for obj in state.objects)
-
 
 # ============================================================================
 # Multiprocessing Worker
@@ -1983,6 +1754,7 @@ class PPOTrainer:
         # Metrics tracking
         self.episode_rewards = deque(maxlen=25)
         self.episode_lengths = deque(maxlen=25)
+        self.episode_killcounts = deque(maxlen=25)
         self.total_episodes = 0
         self.total_steps = 0
         self.last_checkpoint_episode = 0
@@ -2840,6 +2612,7 @@ class PPOTrainer:
         strafe_actions = []
         camera_actions = []
         attack_actions = []
+        speed_actions = []
         rewards = []
         dones = []
         values = []
@@ -2923,13 +2696,22 @@ class PPOTrainer:
                 # Decode spikes to action
                 spike_tensor = torch.FloatTensor(spike_counts).unsqueeze(0).to(self.device)
                 with torch.no_grad():
-                    forward_action, strafe_action, camera_action, attack_action, log_prob, entropy = self.policy.decode_spikes_to_action(spike_tensor)
+                    (
+                        forward_action,
+                        strafe_action,
+                        camera_action,
+                        attack_action,
+                        speed_action,
+                        log_prob,
+                        entropy
+                    ) = self.policy.decode_spikes_to_action(spike_tensor)
 
                 action_tuple = (
                     int(forward_action.item()),
                     int(strafe_action.item()),
                     int(camera_action.item()),
-                    int(attack_action.item())
+                    int(attack_action.item()),
+                    int(speed_action.item())
                 )
 
                 # Execute action in VizDoom
@@ -2944,6 +2726,7 @@ class PPOTrainer:
                 strafe_actions.append(int(strafe_action.item()))
                 camera_actions.append(int(camera_action.item()))
                 attack_actions.append(int(attack_action.item()))
+                speed_actions.append(int(speed_action.item()))
                 rewards.append(reward)
                 dones.append(done)
                 value_scalar = float(value.item())
@@ -2992,8 +2775,12 @@ class PPOTrainer:
                     # NOTE: (2025-11-19, jz/al) only gets here if "done" in VisDoom.step() and done = self.game.is_episode_finished()
                     episode_reward = info['episode_reward']
                     episode_length = info['episode_length']
+                    episode_killcount = info.get('killcount_final')
+                    if episode_killcount is None:
+                        episode_killcount = 0.0
                     self.episode_rewards.append(episode_reward)
                     self.episode_lengths.append(episode_length)
+                    self.episode_killcounts.append(episode_killcount)
                     self.total_episodes += 1 # MARK: increase episode
                     print(
                         f"  Episode {self.total_episodes} finished: Reward={episode_reward:.2f} "
@@ -3012,6 +2799,7 @@ class PPOTrainer:
                                 "episode_length": episode_length,
                                 "episode_reward": episode_reward,
                                 "game_reward_sum": game_reward_sum,
+                                "killcount": episode_killcount,
                                 "episode_actions": {
                                     "success": self.episode_success_actions,
                                     "fail": self.episode_fail_actions,
@@ -3041,6 +2829,7 @@ class PPOTrainer:
                         self.writer.add_scalar('Reward/episode', episode_reward, self.total_episodes)
                         self.writer.add_scalar('Episode/length', episode_length, self.total_episodes)
                         self.writer.add_scalar('Reward/game_sum', game_reward_sum, self.total_episodes)
+                        self.writer.add_scalar('Killcount/episode', episode_killcount, self.total_episodes)
                     self.episode_success_actions = 0
                     self.episode_fail_actions = 0
                     self.episode_neutral_actions = 0
@@ -3095,6 +2884,7 @@ class PPOTrainer:
             'strafe_actions': torch.from_numpy(np.asarray(strafe_actions, dtype=np.int64)).to(self.device),
             'camera_actions': torch.from_numpy(np.asarray(camera_actions, dtype=np.int64)).to(self.device),
             'attack_actions': torch.from_numpy(np.asarray(attack_actions, dtype=np.int64)).to(self.device),
+            'speed_actions': torch.from_numpy(np.asarray(speed_actions, dtype=np.int64)).to(self.device),
             'old_log_probs': torch.from_numpy(np.asarray(log_probs, dtype=np.float32)).to(self.device),
             'advantages': torch.from_numpy(advantages.astype(np.float32)).to(self.device),
             'returns': torch.from_numpy(returns.astype(np.float32)).to(self.device),
@@ -3117,6 +2907,7 @@ class PPOTrainer:
         strafe_list: List[np.ndarray] = []
         camera_list: List[np.ndarray] = []
         attack_list: List[np.ndarray] = []
+        speed_list: List[np.ndarray] = []
         log_probs_list: List[np.ndarray] = []
         rewards_list: List[np.ndarray] = []
         dones_list: List[np.ndarray] = []
@@ -3139,7 +2930,15 @@ class PPOTrainer:
             with torch.no_grad():
                 frequencies, amplitudes, enc_log_prob, enc_entropy = self.policy.sample_encoder(obs_tensor)
                 spike_tensor = self.policy.ablate_spike_features_tensor(frequencies)
-                forward_actions, strafe_actions, camera_actions, attack_actions, log_probs, _ = self.policy.decode_spikes_to_action(spike_tensor)
+                (
+                    forward_actions,
+                    strafe_actions,
+                    camera_actions,
+                    attack_actions,
+                    speed_actions,
+                    log_probs,
+                    _
+                ) = self.policy.decode_spikes_to_action(spike_tensor)
                 values = self.policy.value_net(obs_tensor).squeeze(-1)
 
             for env_idx, remote in enumerate(self.remotes):
@@ -3147,7 +2946,8 @@ class PPOTrainer:
                     int(forward_actions[env_idx].item()),
                     int(strafe_actions[env_idx].item()),
                     int(camera_actions[env_idx].item()),
-                    int(attack_actions[env_idx].item())
+                    int(attack_actions[env_idx].item()),
+                    int(speed_actions[env_idx].item())
                 )
                 remote.send(('step', action_tuple))
 
@@ -3164,6 +2964,7 @@ class PPOTrainer:
             strafe_list.append(strafe_actions.cpu().numpy())
             camera_list.append(camera_actions.cpu().numpy())
             attack_list.append(attack_actions.cpu().numpy())
+            speed_list.append(speed_actions.cpu().numpy())
             total_log_prob = (log_probs + enc_log_prob).cpu().numpy()
             log_probs_list.append(total_log_prob)
             rewards_list.append(rewards)
@@ -3191,8 +2992,12 @@ class PPOTrainer:
                         'episode_length',
                         int(self.vector_episode_lengths[idx]) if self.vector_episode_lengths is not None else 0
                     )
+                    episode_killcount = info.get('killcount_final')
+                    if episode_killcount is None:
+                        episode_killcount = 0.0
                     self.episode_rewards.append(episode_reward)
                     self.episode_lengths.append(episode_length)
+                    self.episode_killcounts.append(episode_killcount)
                     self.total_episodes += 1
 
                     if self.vector_reward_sums is not None:
@@ -3207,6 +3012,8 @@ class PPOTrainer:
                         0,
                         0
                     )
+                    if self.writer is not None:
+                        self.writer.add_scalar('Killcount/episode', episode_killcount, self.total_episodes)
 
             iterations += 1
             if not quota_reached and iterations >= num_steps:
@@ -3229,6 +3036,7 @@ class PPOTrainer:
         strafe_arr = np.stack(strafe_list)
         camera_arr = np.stack(camera_list)
         attack_arr = np.stack(attack_list)
+        speed_arr = np.stack(speed_list)
         log_probs_arr = np.stack(log_probs_list)
         valid_arr = np.stack(valid_masks).astype(bool)
         stim_freq_arr = np.stack(stim_freq_list)
@@ -3242,6 +3050,7 @@ class PPOTrainer:
         strafe_samples: List[np.ndarray] = []
         camera_samples: List[np.ndarray] = []
         attack_samples: List[np.ndarray] = []
+        speed_samples: List[np.ndarray] = []
         log_prob_samples: List[np.ndarray] = []
         advantage_samples: List[np.ndarray] = []
         return_samples: List[np.ndarray] = []
@@ -3262,6 +3071,7 @@ class PPOTrainer:
             env_strafe = strafe_arr[:, env_idx][mask]
             env_camera = camera_arr[:, env_idx][mask]
             env_attack = attack_arr[:, env_idx][mask]
+            env_speed = speed_arr[:, env_idx][mask]
             env_log_prob = log_probs_arr[:, env_idx][mask]
             env_stim_freq = stim_freq_arr[:, env_idx][mask]
             env_stim_amp = stim_amp_arr[:, env_idx][mask]
@@ -3287,6 +3097,7 @@ class PPOTrainer:
             strafe_samples.append(env_strafe)
             camera_samples.append(env_camera)
             attack_samples.append(env_attack)
+            speed_samples.append(env_speed)
             log_prob_samples.append(env_log_prob)
             advantage_samples.append(advantages_env.astype(np.float32))
             return_samples.append(returns_env.astype(np.float32))
@@ -3304,6 +3115,7 @@ class PPOTrainer:
         strafe_batch = np.concatenate(strafe_samples, axis=0).astype(np.int64)
         camera_batch = np.concatenate(camera_samples, axis=0).astype(np.int64)
         attack_batch = np.concatenate(attack_samples, axis=0).astype(np.int64)
+        speed_batch = np.concatenate(speed_samples, axis=0).astype(np.int64)
         log_probs_batch = np.concatenate(log_prob_samples, axis=0).astype(np.float32)
         advantages_batch = np.concatenate(advantage_samples, axis=0).astype(np.float32)
         returns_batch = np.concatenate(return_samples, axis=0).astype(np.float32)
@@ -3319,6 +3131,7 @@ class PPOTrainer:
             'strafe_actions': torch.from_numpy(strafe_batch).to(self.device),
             'camera_actions': torch.from_numpy(camera_batch).to(self.device),
             'attack_actions': torch.from_numpy(attack_batch).to(self.device),
+            'speed_actions': torch.from_numpy(speed_batch).to(self.device),
             'old_log_probs': torch.from_numpy(log_probs_batch).to(self.device),
             'advantages': torch.from_numpy(advantages_batch).to(self.device),
             'returns': torch.from_numpy(returns_batch).to(self.device),
@@ -3367,6 +3180,7 @@ class PPOTrainer:
         strafe_actions = rollout_data['strafe_actions']
         camera_actions = rollout_data['camera_actions']
         attack_actions = rollout_data['attack_actions']
+        speed_actions = rollout_data['speed_actions']
         old_log_probs = rollout_data['old_log_probs']
         advantages = rollout_data['advantages']
         returns = rollout_data['returns']
@@ -3409,6 +3223,7 @@ class PPOTrainer:
                     strafe_actions[batch_idx],
                     camera_actions[batch_idx],
                     attack_actions[batch_idx],
+                    speed_actions[batch_idx],
                     obs[batch_idx],
                     stim_frequencies[batch_idx],
                     stim_amplitudes[batch_idx]
@@ -3599,12 +3414,16 @@ class PPOTrainer:
 
         mean_reward = np.mean(self.episode_rewards)
         mean_length = np.mean(self.episode_lengths)
+        mean_killcount = np.mean(self.episode_killcounts) if self.episode_killcounts else 0.0
 
         self.writer.add_scalar('Reward/mean', mean_reward, self.total_episodes)
         self.writer.add_scalar('Episode/length', mean_length, self.total_episodes)
+        if self.episode_killcounts:
+            self.writer.add_scalar('Killcount/mean', mean_killcount, self.total_episodes)
 
         print(f"\n{'='*70}")
-        print(f"Episodes: {self.total_episodes} | Reward: {mean_reward:.2f} | Length: {mean_length:.1f}")
+        kill_str = f" | Kills: {mean_killcount:.2f}" if self.episode_killcounts else ""
+        print(f"Episodes: {self.total_episodes} | Reward: {mean_reward:.2f} | Length: {mean_length:.1f}{kill_str}")
         print(f"{'='*70}\n")
 
     def _maybe_save_checkpoint(self):
