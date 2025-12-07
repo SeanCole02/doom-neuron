@@ -541,3 +541,4 @@
 {"total_episodes": 541, "episode_reward": -530.0, "episode_length": 529, "success_actions": 0, "fail_actions": 12, "neutral_actions": 0, "success_rate": 0.0, "total_steps": 139792}
 {"total_episodes": 542, "episode_reward": -500.0, "episode_length": 365, "success_actions": 0, "fail_actions": 9, "neutral_actions": 0, "success_rate": 0.0, "total_steps": 140157}
 {"total_episodes": 543, "episode_reward": -510.0, "episode_length": 436, "success_actions": 0, "fail_actions": 8, "neutral_actions": 0, "success_rate": 0.0, "total_steps": 140593}
+{"total_episodes": 544, "episode_reward": -510.0, "episode_length": 365, "success_actions": 0, "fail_actions": 10, "neutral_actions": 0, "success_rate": 0.0, "total_steps": 140958}
