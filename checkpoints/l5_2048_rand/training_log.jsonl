@@ -31,3 +31,5 @@
 {"total_episodes": 31, "episode_reward": -530.0, "episode_length": 113, "success_actions": 0, "fail_actions": 14, "neutral_actions": 0, "success_rate": 0.0, "total_steps": 6388}
 {"total_episodes": 32, "episode_reward": -430.0, "episode_length": 122, "success_actions": 1, "fail_actions": 13, "neutral_actions": 0, "success_rate": 0.07142857142857142, "total_steps": 6510}
 {"total_episodes": 33, "episode_reward": -550.0, "episode_length": 187, "success_actions": 0, "fail_actions": 13, "neutral_actions": 0, "success_rate": 0.0, "total_steps": 6697}
+{"total_episodes": 34, "episode_reward": -440.0, "episode_length": 162, "success_actions": 1, "fail_actions": 12, "neutral_actions": 0, "success_rate": 0.07692307692307693, "total_steps": 6859}
+{"total_episodes": 35, "episode_reward": -580.0, "episode_length": 149, "success_actions": 0, "fail_actions": 14, "neutral_actions": 0, "success_rate": 0.0, "total_steps": 7008}
