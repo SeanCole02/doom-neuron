@@ -246,8 +246,8 @@ class PPOConfig:
     )
     decoder_enforce_nonnegative: bool = False # Can be changed, needs testing
     decoder_freeze_weights: bool = False # Can be changed, needs testing
-    decoder_zero_bias: bool = False # Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement
-    decoder_use_mlp: bool = True # Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod
+    decoder_zero_bias: bool = True # Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement
+    decoder_use_mlp: bool = False # Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod
     decoder_mlp_hidden: Optional[int] = 256 # Value felt ok, needs testing if you use decoder_use_mlp: True
     decoder_weight_l2_coef: float = 0.0 # Untuned
     decoder_bias_l2_coef: float = 0.0 # Untuned
@@ -258,7 +258,7 @@ class PPOConfig:
     encoder_entropy_coef: float = -0.10 # Entropy penalty for the encoder since we use beta sampling
     decoder_ablation_mode: str = 'none' # Ablation to test if decoder is learning on its own, "random" and "zero" are valid inputs
     encoder_use_cnn: bool = True # With my testing it seems like the CNN does not overfit/learn on its own, seems useful to keep True
-    encoder_cnn_channels: int = 64 # Arbitrary value, can be changed
+    encoder_cnn_channels: int = 64 # Increased to 64 per Doom Iniital Report
     encoder_cnn_downsample: int = 4 # Arbitrary value, can be changed
     episode_positive_feedback_event: Optional[str] = None  # None defaults to overall reward
     episode_negative_feedback_event: Optional[str] = None  # None defaults to overall reward
