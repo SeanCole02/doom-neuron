@@ -246,8 +246,8 @@ class PPOConfig:
     )
     decoder_enforce_nonnegative: bool = False # Can be changed, needs testing
     decoder_freeze_weights: bool = False # Can be changed, needs testing
-    decoder_zero_bias: bool = False # Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement
-    decoder_use_mlp: bool = True # Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod
+    decoder_zero_bias: bool = True # Prefer to be true, needs testing, bias tends to cause the decoder to generate its own predictions for movement
+    decoder_use_mlp: bool = False # Prefer to be false, causes decoder to learn how to play the game but was tested on random spikes, could be different in prod
     decoder_mlp_hidden: Optional[int] = 256 # Value felt ok, needs testing if you use decoder_use_mlp: True
     decoder_weight_l2_coef: float = 0.0 # Untuned
     decoder_bias_l2_coef: float = 0.0 # Untuned
@@ -751,11 +751,6 @@ class PPOPolicy(nn.Module):
                 for turn_idx, turn_name in enumerate(self.camera_options):
                     for attack_idx, attack_name in enumerate(self.attack_options):
                         for speed_idx, speed_name in enumerate(self.speed_options):
-                            # Constraint: When attacking, only allow stationary (no movement/turning)
-                            if attack_idx == 1:  # attack
-                                if forward_idx != 0 or strafe_idx != 0 or turn_idx != 0:
-                                    continue  # Skip this combination
-
                             action_name = (
                                 f"{forward_name}_{strafe_name}_{turn_name}_"
                                 f"{attack_name}_{speed_name}"
@@ -769,7 +764,7 @@ class PPOPolicy(nn.Module):
                                 'speed': speed_idx,
                             })
         self.num_joint_actions = len(self.combinatorial_action_defs)
-        print(f"[INFO] Action space size: {self.num_joint_actions} (attack requires stationary)")
+        print(f"[INFO] Action space size: {self.num_joint_actions} (all actions allowed while shooting)")
 
         # Components
         self.encoder = EncoderNetwork(obs_dim, config, num_channel_sets=self.num_channel_sets)
@@ -1085,10 +1080,10 @@ class VizDoomEnv:
         self.enemy_slot_map: Dict[int, int] = {}
 
         # Observation space configuration
-        # [killcount, health, selected_weapon_ammo, position_x, position_y, sin(angle), cos(angle)]
-        # + [5 enemies × 8 features: dist, sin(angle_to), cos(angle_to), sin(enemy_facing), cos(enemy_facing), position_x, position_y, active_flag]
-        base_features = 7
-        enemy_features = self.max_tracked_enemies * 8  # 8 features per enemy (relative + absolute position + active flag)
+        # [killcount, health, selected_weapon_ammo, position_x, position_y, sin(angle), cos(angle), velocity_x, velocity_y]
+        # + [5 enemies × 10 features: dist, sin(angle_to), cos(angle_to), sin(enemy_facing), cos(enemy_facing), position_x, position_y, velocity_x, velocity_y, active_flag]
+        base_features = 9  # Added velocity_x and velocity_y
+        enemy_features = self.max_tracked_enemies * 10  # 10 features per enemy (relative + absolute position + velocity + active flag)
         self.scalar_feature_dim = base_features + enemy_features
 
         if getattr(config, 'encoder_use_cnn', False):
@@ -1123,6 +1118,8 @@ class VizDoomEnv:
         self.last_state_position_x = 0.0
         self.last_state_position_y = 0.0
         self.last_state_angle = 0.0
+        self.last_state_velocity_x = 0.0
+        self.last_state_velocity_y = 0.0
 
     def reset(self) -> np.ndarray:
         """Reset environment and return initial observation."""
@@ -1160,6 +1157,16 @@ class VizDoomEnv:
         self.last_state_angle = self._state_game_variable(
             state,
             GameVariable.ANGLE,
+            0.0
+        )
+        self.last_state_velocity_x = self._state_game_variable(
+            state,
+            GameVariable.VELOCITY_X,
+            0.0
+        )
+        self.last_state_velocity_y = self._state_game_variable(
+            state,
+            GameVariable.VELOCITY_Y,
             0.0
         )
         return self._get_observation(state)
@@ -1281,16 +1288,17 @@ class VizDoomEnv:
         ammo_spent = max(0.0, ammo_before - ammo_after)
         kills_delta = max(0.0, killcount_after - killcount_before)
         kill_reward = kills_delta * 100.0
-        damage_penalty = -damage_taken * 3.0
+        damage_penalty = -damage_taken * 5.0
         ammo_penalty = -ammo_spent * 10.0
         reward = kill_reward + damage_penalty + ammo_penalty
         enemy_kill_event = kills_delta > 0.0
         took_damage_event = damage_taken > 0.0
         ammo_waste_event = ammo_spent > 0.0
 
-        # Add remaining HP penalty when episode ends
+        # Always penalize remaining HP at episode end to discourage stalling/running away
+        # This treats HP as a resource to use, not preserve
         if done:
-            remaining_hp_penalty = -current_health * 3.0
+            remaining_hp_penalty = -current_health * 5.0
             reward += remaining_hp_penalty
             obs = np.zeros(self.obs_dim, dtype=np.float32)
         else:
@@ -1306,6 +1314,8 @@ class VizDoomEnv:
             self.last_state_position_x = self._state_game_variable(state, GameVariable.POSITION_X, self.last_state_position_x)
             self.last_state_position_y = self._state_game_variable(state, GameVariable.POSITION_Y, self.last_state_position_y)
             self.last_state_angle = self._state_game_variable(state, GameVariable.ANGLE, self.last_state_angle)
+            self.last_state_velocity_x = self._state_game_variable(state, GameVariable.VELOCITY_X, self.last_state_velocity_x)
+            self.last_state_velocity_y = self._state_game_variable(state, GameVariable.VELOCITY_Y, self.last_state_velocity_y)
 
         self.episode_reward += reward
         self.episode_length += 1
@@ -1381,7 +1391,15 @@ class VizDoomEnv:
         sin_angle = np.sin(angle_rad)
         cos_angle = np.cos(angle_rad)
 
-        # Scalar features: kills, health, ammo, position_x, position_y, sin(angle), cos(angle)
+        # Extract and normalize velocity
+        velocity_x_raw = self._state_game_variable(state, GameVariable.VELOCITY_X, self.last_state_velocity_x)
+        velocity_y_raw = self._state_game_variable(state, GameVariable.VELOCITY_Y, self.last_state_velocity_y)
+        # Normalize velocity (typical Doom velocity range ~0-40 units/tick)
+        VELOCITY_MAX = 50.0
+        velocity_x_norm = np.clip(velocity_x_raw / VELOCITY_MAX, -1.0, 1.0)
+        velocity_y_norm = np.clip(velocity_y_raw / VELOCITY_MAX, -1.0, 1.0)
+
+        # Scalar features: kills, health, ammo, position_x, position_y, sin(angle), cos(angle), velocity_x, velocity_y
         obs_components = [
             kills,  # [-1, 1]
             health,  # [-1, 1]
@@ -1389,7 +1407,9 @@ class VizDoomEnv:
             position_x_norm,  # [-1, 1]
             position_y_norm,  # [-1, 1]
             sin_angle,  # [-1, 1]
-            cos_angle  # [-1, 1]
+            cos_angle,  # [-1, 1]
+            velocity_x_norm,  # [-1, 1]
+            velocity_y_norm  # [-1, 1]
         ]
 
         # Add enemy features
@@ -1443,14 +1463,16 @@ class VizDoomEnv:
     def _get_enemy_features(self, state: GameState) -> np.ndarray:
         """
         Return stacked features for up to max_tracked_enemies.
-        Each enemy: [dist_norm, sin(angle_to), cos(angle_to), sin(enemy_facing), cos(enemy_facing), position_x_norm, position_y_norm, active_flag] in [-1,1].
-        Missing enemies default to [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] (far distance, center position, inactive).
+        Each enemy: [dist_norm, sin(angle_to), cos(angle_to), sin(enemy_facing), cos(enemy_facing), position_x_norm, position_y_norm, velocity_x_norm, velocity_y_norm, active_flag] in [-1,1].
+        Missing enemies default to [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] (far distance, center position, zero velocity, inactive).
         """
-        features = np.zeros((self.max_tracked_enemies, 8), dtype=np.float32)
+        features = np.zeros((self.max_tracked_enemies, 10), dtype=np.float32)
         features[:, 0] = 1.0  # default far distance
         features[:, 5] = 0.0  # default position_x (center)
         features[:, 6] = 0.0  # default position_y (center)
-        features[:, 7] = 0.0  # default inactive (no enemy in slot)
+        features[:, 7] = 0.0  # default velocity_x (stationary)
+        features[:, 8] = 0.0  # default velocity_y (stationary)
+        features[:, 9] = 0.0  # default inactive (no enemy in slot)
 
         if (
             state is None
@@ -1512,6 +1534,13 @@ class VizDoomEnv:
             enemy_x_norm = float(np.clip(enemy_obj.position_x / POSITION_MAX, -1.0, 1.0))
             enemy_y_norm = float(np.clip(enemy_obj.position_y / POSITION_MAX, -1.0, 1.0))
 
+            # Enemy velocity (normalized to [-1, 1])
+            VELOCITY_MAX = 50.0
+            enemy_vx = getattr(enemy_obj, "velocity_x", 0.0)
+            enemy_vy = getattr(enemy_obj, "velocity_y", 0.0)
+            enemy_vx_norm = float(np.clip(enemy_vx / VELOCITY_MAX, -1.0, 1.0))
+            enemy_vy_norm = float(np.clip(enemy_vy / VELOCITY_MAX, -1.0, 1.0))
+
             features[slot_idx, 0] = dist_norm
             features[slot_idx, 1] = sin_angle_to
             features[slot_idx, 2] = cos_angle_to
@@ -1519,7 +1548,9 @@ class VizDoomEnv:
             features[slot_idx, 4] = cos_enemy_facing
             features[slot_idx, 5] = enemy_x_norm
             features[slot_idx, 6] = enemy_y_norm
-            features[slot_idx, 7] = 1.0  # active flag (enemy present in this slot)
+            features[slot_idx, 7] = enemy_vx_norm
+            features[slot_idx, 8] = enemy_vy_norm
+            features[slot_idx, 9] = 1.0  # active flag (enemy present in this slot)
 
         return features.flatten()
 
