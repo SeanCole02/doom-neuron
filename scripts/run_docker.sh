@@ -20,4 +20,4 @@ sudo docker run -it \
   --ipc=host \
   --shm-size 8G \
   --user ${USER_ID}:${GROUP_ID} \
-  rocm/pytorch/seandoom:latest
+  rocm/pytorch/doom-neuron:latest

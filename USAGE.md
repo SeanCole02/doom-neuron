@@ -139,7 +139,7 @@ python training_server.py --mode train --device cuda --cl1-host 192.168.1.50
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--show_window` | flag | False | Show VizDoom game window |
-| `--recording_path` | str | /data/recordings/seandoom | Recording directory path |
+| `--recording_path` | str | /data/recordings/doom-neuron | Recording directory path |
 | `--tick_frequency_hz` | int | 10 | Game loop frequency in Hz |
 
 ### Scenario Configuration

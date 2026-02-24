@@ -1,7 +1,7 @@
 #!/bin/bash
 # This will build a docker image, run this at project root
 
-IMAGE_NAME="rocm/pytorch/seandoom"
+IMAGE_NAME="rocm/pytorch/doom-neuron"
 IMAGE_TAG="latest"
 DOCKER_FILE="./docker/Dockerfile.rocm"
 

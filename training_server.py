@@ -1689,7 +1689,7 @@ class PPOTrainer:
         self,
         config:            PPOConfig,
         tick_frequency_hz: int  = 10,
-        recording_path:    str  = "/data/recordings/seandoom",
+        recording_path:    str  = "/data/recordings/doom-neuron",
         show_window:       bool = False,
         device:            str  = 'cuda'
         ):
@@ -3838,7 +3838,7 @@ def main():
     parser.add_argument('--show_window',
                         action="store_true", default=False,
                         help='Show the vizdoom window')
-    parser.add_argument('--recording_path', type=str, default='/data/recordings/seandoom',
+    parser.add_argument('--recording_path', type=str, default='/data/recordings/doom-neuron',
                         help='Path for saving recordings (managed by CL1 device)')
     parser.add_argument('--tick_frequency_hz', type=int, default=10,
                         help='Frequency to run the game loop in Hz')

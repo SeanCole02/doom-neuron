@@ -99,7 +99,7 @@ class CL1NeuralInterface:
         event_port: int,
         feedback_port: int,
         tick_frequency_hz: int = 240,
-        recording_path: str = "/data/recordings/seandoom",
+        recording_path: str = "/data/recordings/doom-neuron",
     ):
         self.training_host = training_host
         self.stim_port = stim_port

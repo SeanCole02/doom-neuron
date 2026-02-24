@@ -11,5 +11,5 @@
 
 python cl1_neural_interface.py \
     --training-host 192.168.1.238 \
-    --recording-path /data/recordings/seandoom/ \
+    --recording-path /data/recordings/doom-neuron/ \
     --tick-frequency 10

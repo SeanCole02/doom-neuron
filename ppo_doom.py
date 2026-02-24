@@ -1890,7 +1890,7 @@ class PPOTrainer:
         self,
         config:            PPOConfig,
         tick_frequency_hz: int  = 10,
-        recording_path:    str  = "/data/recordings/seandoom",
+        recording_path:    str  = "/data/recordings/doom-neuron",
         show_window:       bool = False,
         device:            str  = 'cuda'
         ):
@@ -3840,7 +3840,7 @@ class PPOTrainer:
                     # NOTE: (2025-11-19, jz/al) start recording
                     # TODO (al): Add labman plugin
                     recording = neurons.record(
-                        file_suffix   = f"seandoom_{self.tick_frequency_hz}_hz",
+                        file_suffix   = f"doom-neuron_{self.tick_frequency_hz}_hz",
                         file_location = self.recording_path,
                         attributes    = {
                             "tick_frequency": self.tick_frequency_hz
@@ -4156,7 +4156,7 @@ def main():
     parser.add_argument('--show_window',
                         action="store_true", default=False,
                         help='Show the vizdoom window')
-    parser.add_argument('--recording_path', type=str, default='/data/recordings/seandoom',
+    parser.add_argument('--recording_path', type=str, default='/data/recordings/doom-neuron',
                         help='Path for saving recordings')
     parser.add_argument('--tick_frequency_hz', type=int, default=10,
                         help='Frequency to run neurons.loop()')
