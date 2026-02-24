@@ -1,3 +1,7 @@
+"""
+CHANGELOG:
+(2025-12-04) Made survival.wad the default scenario. Added kill count to logs. Disabled movement reward.
+"""
 import gc
 import math
 import warnings
@@ -2149,11 +2153,12 @@ class PPOTrainer:
 
     def _append_episode_log(
         self,
-        episode_reward: float,
-        episode_length: int,
+        episode_reward:  float,
+        episode_length:  int,
         success_actions: int,
-        fail_actions: int,
-        neutral_actions: int
+        fail_actions:    int,
+        neutral_actions: int,
+        kill_count:      float = 0.0
     ):
         if self.training_log_path is None:
             return
@@ -2161,14 +2166,15 @@ class PPOTrainer:
         success_rate = (success_actions / total_feedback) if total_feedback > 0 else 0.0
 
         record = {
-            "total_episodes": self.total_episodes,
-            "episode_reward": episode_reward,
-            "episode_length": episode_length,
+            "total_episodes":  self.total_episodes,
+            "episode_reward":  episode_reward,
+            "kill_count":      kill_count,
+            "episode_length":  episode_length,
             "success_actions": success_actions,
-            "fail_actions": fail_actions,
+            "fail_actions":    fail_actions,
             "neutral_actions": neutral_actions,
-            "success_rate": success_rate,
-            "total_steps": self.total_steps
+            "success_rate":    success_rate,
+            "total_steps":     self.total_steps
         }
         with open(self.training_log_path, 'a', encoding='utf-8') as log_file:
             json.dump(record, log_file)
@@ -2813,9 +2819,10 @@ class PPOTrainer:
                     self.episode_lengths.append(episode_length)
                     self.episode_killcounts.append(episode_killcount)
                     self.total_episodes += 1 # MARK: increase episode
+                    kill_count = self.env.game.get_game_variable(vizdoom.GameVariable.KILLCOUNT)
                     print(
                         f"  Episode {self.total_episodes} finished: Reward={episode_reward:.2f} "
-                        f"(Game={game_reward_sum:.2f}) | Length={episode_length}"
+                        f"(Game={game_reward_sum:.2f}) | Length={episode_length} | Killcount={kill_count}"
                     )
 
                     # Send event metadata to CL1 for datastream logging
@@ -2829,6 +2836,7 @@ class PPOTrainer:
                                 "episode": self.total_episodes,
                                 "episode_length": episode_length,
                                 "episode_reward": episode_reward,
+                                "kill_count": kill_count,
                                 "game_reward_sum": game_reward_sum,
                                 "killcount": episode_killcount,
                                 "episode_actions": {
@@ -2851,7 +2859,8 @@ class PPOTrainer:
                         episode_length,
                         self.episode_success_actions,
                         self.episode_fail_actions,
-                        self.episode_neutral_actions
+                        self.episode_neutral_actions,
+                        kill_count
                     )
                     armor_dist = info.get('armor_distance_final')
                     if armor_dist is not None and self.writer is not None:

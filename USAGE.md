@@ -18,6 +18,26 @@ Notes (2025-11-25, jz):
 ./scripts/run_training_server.sh
 ```
 
+Notes (2025-12-22, jz):
+Convenience scripts for testing locally with the SDK, start CL1 first:
+
+```shell
+# Run this on CL1
+# Check the ip address and tick frequency is correct
+./scripts/run_sdk_cl1.sh
+```
+
+```shell
+# Check the ip address and max-episodes is correct
+./scripts/run_sdk_training_server.sh
+```
+
+For visualisation, open `./visualisation.html` in a web browser, update the following line with the ip address of the training server:
+
+```html
+<img id="img" width="640" src="http://127.0.0.1:12349/doom.mjpeg">
+```
+
 ### 1. Start CL1 Neural Interface (on CL1 device)
 
 ```bash
@@ -29,6 +49,16 @@ python cl1_neural_interface.py --training-host <TRAINING_IP> --tick-frequency 10
 ```bash
 python training_server.py --mode train --device cuda --cl1-host <CL1_IP>
 ```
+
+## Checkpoint management
+
+The working checkpoints is currently at:
+
+```shell
+checkpoints/l5_2048_rand
+```
+
+To save/load checkpoints, make a copy of the contents of this directory.
 
 ## CL1 Neural Interface
 
