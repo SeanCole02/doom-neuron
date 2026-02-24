@@ -62,3 +62,7 @@ python3 ppo_doom.py \
    --recording_path ./recordings \
    --show_window
 ```
+
+## Running Local Server + Connecting to CL1 ##
+
+See [USAGE.md](USAGE.md)
