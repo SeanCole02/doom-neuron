@@ -53,7 +53,7 @@
 ## Running with increased configuration (2025-11-19)
 
 ```python
-# Run with cpu and a tick rate of 240 Hz
+# Run with cpu and a tick rate of 10 Hz
 python3 ppo_doom.py \
    --device "cpu" \
    --tick_frequency_hz 10
