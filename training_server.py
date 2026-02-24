@@ -1688,7 +1688,7 @@ class PPOTrainer:
     def __init__(
         self,
         config:            PPOConfig,
-        tick_frequency_hz: int  = 240,
+        tick_frequency_hz: int  = 10,
         recording_path:    str  = "/data/recordings/seandoom",
         show_window:       bool = False,
         device:            str  = 'cuda'
@@ -3840,7 +3840,7 @@ def main():
                         help='Show the vizdoom window')
     parser.add_argument('--recording_path', type=str, default='/data/recordings/seandoom',
                         help='Path for saving recordings (managed by CL1 device)')
-    parser.add_argument('--tick_frequency_hz', type=int, default=240,
+    parser.add_argument('--tick_frequency_hz', type=int, default=10,
                         help='Frequency to run the game loop in Hz')
     parser.add_argument('--visualisation-port', type=int, default=12349,
                         help='Port to use for accessing the visualisation image stream')

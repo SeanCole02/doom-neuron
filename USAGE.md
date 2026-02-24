@@ -77,7 +77,7 @@ python cl1_neural_interface.py --training-host 192.168.1.100
 | `--spike-port` | int | 12346 | Port for sending spike data |
 | `--event-port` | int | 12347 | Port for receiving event metadata |
 | `--feedback-port` | int | 12348 | Port for receiving feedback commands |
-| `--tick-frequency` | int | 240 | Neural loop frequency in Hz |
+| `--tick-frequency` | int | 10 | Neural loop frequency in Hz |
 | `--recording-path` | str | ./recordings | Directory for saving recordings |
 
 ### Example with Custom Ports
@@ -89,7 +89,7 @@ python cl1_neural_interface.py \
     --spike-port 12346 \
     --event-port 12347 \
     --feedback-port 12348 \
-    --tick-frequency 240 \
+    --tick-frequency 10 \
     --recording-path /data/recordings
 ```
 
@@ -140,7 +140,17 @@ python training_server.py --mode train --device cuda --cl1-host 192.168.1.50
 |----------|------|---------|-------------|
 | `--show_window` | flag | False | Show VizDoom game window |
 | `--recording_path` | str | /data/recordings/seandoom | Recording directory path |
-| `--tick_frequency_hz` | int | 240 | Game loop frequency in Hz |
+| `--tick_frequency_hz` | int | 10 | Game loop frequency in Hz |
+
+### Scenario Configuration
+
+The scenario is set via `TrainingConfig.doom_config` in code (not a CLI argument). The default is `progressive_deathmatch.cfg`. Available options:
+
+| Config file | WAD | Description |
+|-------------|-----|-------------|
+| `progressive_deathmatch.cfg` | `progressive_deathmatch.wad` | **Default.** Similar to survival but kills don't reset ammo count, encouraging proper ammo management; includes movement tweaks to make movement easier to train. |
+| `survival.cfg` | `survival.wad` | Survival scenario. |
+| `deadly_corridor_1.cfg` – `deadly_corridor_5.cfg` | `deadly_corridor.wad` | Curriculum stages; 1–4 ramp difficulty gradually, 5 is the benchmark. |
 
 ### Model Configuration
 

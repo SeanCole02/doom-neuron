@@ -81,7 +81,7 @@ class PPOConfig:
     """Configuration for PPO training and neural interface."""
 
     # Environment
-    doom_config: str = "deadly_corridor_1.cfg"
+    doom_config: str = "progressive_deathmatch.cfg"
     screen_resolution: str = "RES_320X240"
     use_screen_buffer: bool = True
     max_turn_delta: float = 360.0           # Maximum absolute degrees for TURN_LEFT_RIGHT_DELTA
@@ -1889,7 +1889,7 @@ class PPOTrainer:
     def __init__(
         self,
         config:            PPOConfig,
-        tick_frequency_hz: int  = 240,
+        tick_frequency_hz: int  = 10,
         recording_path:    str  = "/data/recordings/seandoom",
         show_window:       bool = False,
         device:            str  = 'cuda'
@@ -4158,7 +4158,7 @@ def main():
                         help='Show the vizdoom window')
     parser.add_argument('--recording_path', type=str, default='/data/recordings/seandoom',
                         help='Path for saving recordings')
-    parser.add_argument('--tick_frequency_hz', type=int, default=240,
+    parser.add_argument('--tick_frequency_hz', type=int, default=10,
                         help='Frequency to run neurons.loop()')
 
     args = parser.parse_args()
