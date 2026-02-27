@@ -1,12 +1,12 @@
 # FAQ
 Isn't the decoder/PPO doing all the learning?
-```
+
 No, this is precisely why there are ablations. The footage you see in the video was taken using a 0-bias full linear readout decoder, meaning that the action selected is a linear function of the output spikes from the CL1; the CL1 is doing the learning. There is a noticeable difference when using the ablation (both random and 0 spikes result in zero learning) versus actual CL1 spikes.
-```
+
 How is DOOM converted to electrical signals? 
-```
+
 We train an encoder in our PPO policy that dictates the stimulation pattern (frequency, amplitude, pulses, and even which channels to stimulate). Because the CL1 spikes are non-differentiable, the encoder is trained through PPO policy gradients using the log-likelihood trick (REINFORCE-style), i.e., by including the encoder’s sampled stimulation log-probs in the PPO objective rather than backpropagating through spikes.
-```
+
 
 
 
