@@ -1,9 +1,21 @@
+# FAQ
+Isn't the decoder/PPO doing all the learning?
+```
+No, this is precisely why there are ablations. The footage you see in the video was taken using a 0-bias full linear readout decoder, meaning that the action selected is a linear function of the output spikes from the CL1; the CL1 is doing the learning. There is a noticeable difference when using the ablation (both random and 0 spikes result in zero learning) versus actual CL1 spikes.
+```
+How is DOOM converted to electrical signals? 
+```
+We train an encoder in our PPO policy that dictates the stimulation pattern (frequency, amplitude, pulses, and even which channels to stimulate). Because the CL1 spikes are non-differentiable, the encoder is trained through PPO policy gradients using the log-likelihood trick (REINFORCE-style), i.e., by including the encoder’s sampled stimulation log-probs in the PPO objective rather than backpropagating through spikes.
+```
+
+
+
 # ppo_doom.py Quickstart
 
 ## Default Parameters
 - **PPO**: `learning_rate=3e-4`, `gamma=0.99`, `gae_lambda=0.95` (many RL implementations actually use far lower gamma 0.95 and lambda 0.90 for GAE but this can severely affect training on lower levels due to the long range dependencies since you take less damage and therefore live longer), `clip_epsilon=0.2`, `entropy_coef=0.02`, `steps_per_update=2048` (use higher for stability but it can be really slow without parallelization of some sort, that would probably require GRPO instead of PPO), `batch_size=256`, `num_epochs=4`.
-- **Observation & Action**: Screen buffer enabled at `RES_320X240`; hybrid action spaces are used (and greatly preferred) unless `use_discrete_action_set=True`. Realistically you only flip this if all else fails to reduce entropy as it greatly reduces the movement fidelity of the agent and just doesn't look as cool.
-- **Scenario Config**: `doom_config` defaults to `progressive_deathmatch.cfg` (`progressive_deathmatch.wad`) — similar to survival but kills don't reset ammo count (encouraging proper ammo management) with movement tweaks to make movement easier to train. Also available: `survival.cfg` (`survival.wad`) and the deadly corridor curriculum (`deadly_corridor_1.cfg` through `deadly_corridor_5.cfg`, all using `deadly_corridor.wad`). Files `deadly_corridor_1.cfg` to `deadly_corridor_4.cfg` ramp difficulty gradually, but `deadly_corridor_5.cfg` is a significant jump (and the actual benchmark). Progress through 1-4 builds basic policies yet may result in movement habits that underperform on 5 (straight running toward armor). Adjust curriculum pacing accordingly.
+- **Observation & Action**: Screen buffer enabled at `RES_320X240`; hybrid action spaces are used (and greatly preferred) unless `use_discrete_action_set=True`. Realistically, you only flip this if all else fails to reduce entropy as it greatly reduces the movement fidelity of the agent and just doesn't look as cool.
+- **Scenario Config**: `doom_config` defaults to `progressive_deathmatch.cfg` (`progressive_deathmatch.wad`) — similar to survival, but kills don't reset ammo count (encouraging proper ammo management) with movement tweaks to make movement easier to train. Also available: `survival.cfg` (`survival.wad`) and the deadly corridor curriculum (`deadly_corridor_1.cfg` through `deadly_corridor_5.cfg`, all using `deadly_corridor.wad`). Files `deadly_corridor_1.cfg` to `deadly_corridor_4.cfg` ramp difficulty gradually, but `deadly_corridor_5.cfg` is a significant jump (and the actual benchmark). Progress through 1-4 builds basic policies yet may result in movement habits that underperform on 5 (straight running toward armor). Adjust curriculum pacing accordingly.
 - **Feedback Defaults**: Episode feedback now follows overall reward unless `episode_positive_feedback_event`/`episode_negative_feedback_event` are set. Reward channels use `feedback_positive_amplitude=2.0` and `feedback_negative_amplitude=2.0`, dynamically scaled but clipped via `_limit_scaled_amplitude`.
 
 ## Architecture & Feedback Tuning (Deadly Corridor)
