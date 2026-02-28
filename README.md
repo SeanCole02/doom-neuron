@@ -5,8 +5,7 @@ No, this is precisely why there are ablations. The footage you see in the video 
 
 Isn't the encoder/PPO doing all the learning?
 
-This question largely assumes that the cells are static, which is incorrect; it is not a memory-less feed X in get Y machine. Both the policy and the cells are dynamical systems; biological neurons have an internal state (membrane potential, synaptic weights, adaptation currents). The same stimulation delivered at different points in training will produce different spike patterns, because the neurons have been conditioned by prior feedback
-During testing, we froze encoder weights and still observed improvements in the reward. 
+This question largely assumes that the cells are static, which is incorrect; it is not a memory-less feed X in get Y machine. Both the policy and the cells are dynamical systems; biological neurons have an internal state (membrane potential, synaptic weights, adaptation currents). The same stimulation delivered at different points in training will produce different spike patterns, because the neurons have been conditioned by prior feedback. During testing, we froze encoder weights and still observed improvements in the reward. 
 
 How is DOOM converted to electrical signals? 
 
