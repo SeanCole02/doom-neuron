@@ -262,8 +262,14 @@ class PPOConfig:
     encoder_entropy_coef: float = -0.10 # Entropy penalty for the encoder since we use beta sampling
     decoder_ablation_mode: str = 'none' # Ablation to test if decoder is learning on its own, "random" and "zero" are valid inputs
     encoder_use_cnn: bool = True # With my testing it seems like the CNN does not overfit/learn on its own, seems useful to keep True
+    encoder_same_frame_encoding: bool = False # Experimental: repeated frame views increase decoder capacity and have not been ablation-tested in Doom yet
+    encoder_same_frame_repeats: int = 3
+    encoder_same_frame_methods: Tuple[str, ...] = ('raw', 'edge', 'contrast')
     encoder_cnn_channels: int = 64 # Increased to 64 per Doom Iniital Report
     encoder_cnn_downsample: int = 4 # Arbitrary value, can be changed
+    spike_artifact_wait_s: float = 0.050
+    udp_timeout_s: float = 5.0
+    episode_reset_delay_s: float = 1.0
     episode_positive_feedback_event: Optional[str] = None  # None defaults to overall reward
     episode_negative_feedback_event: Optional[str] = None  # None defaults to overall reward
     feedback_surprise_gain: float = 0.25 # Tune as needed, will depend on neurons
@@ -276,6 +282,14 @@ class PPOConfig:
 
     def __post_init__(self):
         """Initialize CL SDK channel sets (required)."""
+        methods = tuple(
+            str(method).strip().lower()
+            for method in getattr(self, 'encoder_same_frame_methods', ('raw',))
+            if str(method).strip()
+        )
+        self.encoder_same_frame_methods = methods or ('raw',)
+        self.encoder_same_frame_repeats = max(1, int(getattr(self, 'encoder_same_frame_repeats', 3)))
+
         # Create ChannelSet objects for CL SDK when running on hardware
         self.all_channels = [i for i in range(64) if i not in {0, 4, 7, 56, 63}]
 
@@ -332,6 +346,15 @@ class PPOConfig:
 class EncoderNetwork(nn.Module):
     """Encodes game state into CL SDK stimulation parameters."""
 
+    _SOBEL_X = torch.tensor(
+        [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
+        dtype=torch.float32
+    ).view(1, 1, 3, 3)
+    _SOBEL_Y = torch.tensor(
+        [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]],
+        dtype=torch.float32
+    ).view(1, 1, 3, 3)
+
     def __init__(self, obs_dim: int, config: PPOConfig, num_channel_sets: int):
         super().__init__()
         self.config = config
@@ -339,6 +362,17 @@ class EncoderNetwork(nn.Module):
         self.trainable = bool(getattr(config, 'encoder_trainable', False))
 
         self.use_cnn = bool(getattr(config, 'encoder_use_cnn', False))
+        self.same_frame_enabled = bool(getattr(config, 'encoder_same_frame_encoding', False))
+        configured_repeats = max(1, int(getattr(config, 'encoder_same_frame_repeats', 3)))
+        methods = tuple(getattr(config, 'encoder_same_frame_methods', ('raw',)))
+        if self.same_frame_enabled:
+            padded_methods = list(methods[:configured_repeats])
+            if len(padded_methods) < configured_repeats:
+                padded_methods.extend(['raw'] * (configured_repeats - len(padded_methods)))
+            self.round_methods = tuple(padded_methods)
+        else:
+            self.round_methods = ('raw',)
+        self.num_rounds = len(self.round_methods)
         self.scalar_dim = int(getattr(config, 'scalar_obs_dim', obs_dim))
         hidden = config.hidden_size
         self._shape_warning_logged = False
@@ -378,25 +412,105 @@ class EncoderNetwork(nn.Module):
         )
 
         if self.trainable:
-            self.freq_alpha_head = nn.Linear(hidden, num_channel_sets)
-            self.freq_beta_head = nn.Linear(hidden, num_channel_sets)
-            self.amp_alpha_head = nn.Linear(hidden, num_channel_sets)
-            self.amp_beta_head = nn.Linear(hidden, num_channel_sets)
+            if self.num_rounds == 1:
+                self.freq_alpha_head = nn.Linear(hidden, num_channel_sets)
+                self.freq_beta_head = nn.Linear(hidden, num_channel_sets)
+                self.amp_alpha_head = nn.Linear(hidden, num_channel_sets)
+                self.amp_beta_head = nn.Linear(hidden, num_channel_sets)
+            else:
+                self.freq_alpha_heads = nn.ModuleList(
+                    [nn.Linear(hidden, num_channel_sets) for _ in range(self.num_rounds)]
+                )
+                self.freq_beta_heads = nn.ModuleList(
+                    [nn.Linear(hidden, num_channel_sets) for _ in range(self.num_rounds)]
+                )
+                self.amp_alpha_heads = nn.ModuleList(
+                    [nn.Linear(hidden, num_channel_sets) for _ in range(self.num_rounds)]
+                )
+                self.amp_beta_heads = nn.ModuleList(
+                    [nn.Linear(hidden, num_channel_sets) for _ in range(self.num_rounds)]
+                )
             self._freq_range = float(self.config.max_frequency - self.config.min_frequency)
             self._amp_range = float(self.config.max_amplitude - self.config.min_amplitude)
             self._freq_log_scale = math.log(self._freq_range + 1e-8)
             self._amp_log_scale = math.log(self._amp_range + 1e-8)
         else:
-            self.freq_head = nn.Linear(hidden, num_channel_sets)
-            self.amp_head = nn.Linear(hidden, num_channel_sets)
+            if self.num_rounds == 1:
+                self.freq_head = nn.Linear(hidden, num_channel_sets)
+                self.amp_head = nn.Linear(hidden, num_channel_sets)
+            else:
+                self.freq_heads = nn.ModuleList(
+                    [nn.Linear(hidden, num_channel_sets) for _ in range(self.num_rounds)]
+                )
+                self.amp_heads = nn.ModuleList(
+                    [nn.Linear(hidden, num_channel_sets) for _ in range(self.num_rounds)]
+                )
 
-    def _combine_features(self, obs: torch.Tensor) -> torch.Tensor:
+    def _round_freq_alpha_head(self, round_idx: int) -> nn.Module:
+        if self.num_rounds == 1:
+            return self.freq_alpha_head
+        return self.freq_alpha_heads[round_idx]
+
+    def _round_freq_beta_head(self, round_idx: int) -> nn.Module:
+        if self.num_rounds == 1:
+            return self.freq_beta_head
+        return self.freq_beta_heads[round_idx]
+
+    def _round_amp_alpha_head(self, round_idx: int) -> nn.Module:
+        if self.num_rounds == 1:
+            return self.amp_alpha_head
+        return self.amp_alpha_heads[round_idx]
+
+    def _round_amp_beta_head(self, round_idx: int) -> nn.Module:
+        if self.num_rounds == 1:
+            return self.amp_beta_head
+        return self.amp_beta_heads[round_idx]
+
+    def _round_freq_head(self, round_idx: int) -> nn.Module:
+        if self.num_rounds == 1:
+            return self.freq_head
+        return self.freq_heads[round_idx]
+
+    def _round_amp_head(self, round_idx: int) -> nn.Module:
+        if self.num_rounds == 1:
+            return self.amp_head
+        return self.amp_heads[round_idx]
+
+    def _transform_cnn_image(self, image: torch.Tensor, mode: str) -> torch.Tensor:
+        """Apply one same-frame encoding transform.
+
+        Supported modes:
+        - `raw`: unchanged grayscale frame, keeps the full luminance layout.
+        - `edge`: Sobel edge magnitude, emphasizing contours and geometry.
+        - `contrast`: locally centered high-contrast view, emphasizing bright/dark
+          deviations without explicitly extracting edges.
+        """
+        if mode == 'raw':
+            return image
+        if mode == 'edge':
+            sobel_x = self._SOBEL_X.to(image.device, image.dtype)
+            sobel_y = self._SOBEL_Y.to(image.device, image.dtype)
+            edge_x = F.conv2d(image, sobel_x, padding=1)
+            edge_y = F.conv2d(image, sobel_y, padding=1)
+            return torch.sqrt(edge_x.pow(2) + edge_y.pow(2) + 1e-8).clamp(0.0, 1.0)
+        if mode == 'contrast':
+            centered = image - image.mean(dim=(-2, -1), keepdim=True)
+            scaled = torch.tanh(centered * 3.0)
+            return ((scaled + 1.0) * 0.5).clamp(0.0, 1.0)
+        raise ValueError(
+            f"Unsupported encoder same-frame mode '{mode}'. "
+            "Expected one of: raw, edge, contrast."
+        )
+
+    def _combine_features(self, obs: torch.Tensor, round_idx: int = 0) -> torch.Tensor:
+        mode = self.round_methods[round_idx]
         if self.use_cnn:
             scalar = obs[:, :self.scalar_dim]
             image_flat = obs[:, self.scalar_dim:].contiguous()
             image = image_flat.view(-1, *self.cnn_shape)
             if image.size(1) > 1:
                 image = image.mean(dim=1, keepdim=True)
+            image = self._transform_cnn_image(image, mode)
             cnn_features = self.cnn(image).view(obs.size(0), -1)
             combined = torch.cat([scalar, cnn_features], dim=-1)
         else:
@@ -422,15 +536,15 @@ class EncoderNetwork(nn.Module):
         beta = F.softplus(beta_head) + 1.0
         return alpha, beta
 
-    def _distributions(self, obs: torch.Tensor) -> Tuple[Beta, Beta]:
-        features = self._combine_features(obs)
+    def _distributions(self, obs: torch.Tensor, round_idx: int = 0) -> Tuple[Beta, Beta]:
+        features = self._combine_features(obs, round_idx=round_idx)
         freq_alpha, freq_beta = self._beta_params(
-            self.freq_alpha_head(features),
-            self.freq_beta_head(features)
+            self._round_freq_alpha_head(round_idx)(features),
+            self._round_freq_beta_head(round_idx)(features)
         )
         amp_alpha, amp_beta = self._beta_params(
-            self.amp_alpha_head(features),
-            self.amp_beta_head(features)
+            self._round_amp_alpha_head(round_idx)(features),
+            self._round_amp_beta_head(round_idx)(features)
         )
         return Beta(freq_alpha, freq_beta), Beta(amp_alpha, amp_beta)
 
@@ -447,15 +561,18 @@ class EncoderNetwork(nn.Module):
         return torch.clamp((amp - self.config.min_amplitude) / (self._amp_range + 1e-8), 1e-6, 1 - 1e-6)
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.forward_round(obs, round_idx=0)
+
+    def forward_round(self, obs: torch.Tensor, round_idx: int = 0) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.trainable:
-            freq_dist, amp_dist = self._distributions(obs)
+            freq_dist, amp_dist = self._distributions(obs, round_idx=round_idx)
             frequencies = self._scale_freq(freq_dist.mean)
             amplitudes = self._scale_amp(amp_dist.mean)
             return frequencies, amplitudes
 
-        features = self._combine_features(obs)
-        freq_raw = torch.sigmoid(self.freq_head(features))
-        amp_raw = torch.sigmoid(self.amp_head(features))
+        features = self._combine_features(obs, round_idx=round_idx)
+        freq_raw = torch.sigmoid(self._round_freq_head(round_idx)(features))
+        amp_raw = torch.sigmoid(self._round_amp_head(round_idx)(features))
 
         frequencies = (
             self.config.min_frequency +
@@ -468,12 +585,20 @@ class EncoderNetwork(nn.Module):
         return frequencies, amplitudes
 
     def sample(self, obs: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.sample_round(obs, round_idx=0, deterministic=deterministic)
+
+    def sample_round(
+        self,
+        obs: torch.Tensor,
+        round_idx: int = 0,
+        deterministic: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if not self.trainable:
-            frequencies, amplitudes = self.forward(obs)
+            frequencies, amplitudes = self.forward_round(obs, round_idx=round_idx)
             zeros = torch.zeros_like(frequencies)
             return frequencies, amplitudes, zeros, zeros, zeros, zeros
 
-        freq_dist, amp_dist = self._distributions(obs)
+        freq_dist, amp_dist = self._distributions(obs, round_idx=round_idx)
         if deterministic:
             freq_u = freq_dist.mean
             amp_u = amp_dist.mean
@@ -490,10 +615,19 @@ class EncoderNetwork(nn.Module):
         return frequencies, amplitudes, freq_log_prob, amp_log_prob, freq_entropy, amp_entropy
 
     def log_prob(self, obs: torch.Tensor, frequencies: torch.Tensor, amplitudes: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.log_prob_round(obs, frequencies, amplitudes, round_idx=0)
+
+    def log_prob_round(
+        self,
+        obs: torch.Tensor,
+        frequencies: torch.Tensor,
+        amplitudes: torch.Tensor,
+        round_idx: int = 0
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         if not self.trainable:
             zeros = torch.zeros_like(frequencies)
             return zeros, zeros
-        freq_dist, amp_dist = self._distributions(obs)
+        freq_dist, amp_dist = self._distributions(obs, round_idx=round_idx)
         freq_u = self._unscale_freq(frequencies)
         amp_u = self._unscale_amp(amplitudes)
         freq_log_prob = freq_dist.log_prob(freq_u) - self._freq_log_scale
@@ -501,10 +635,17 @@ class EncoderNetwork(nn.Module):
         return freq_log_prob, amp_log_prob
 
     def entropy(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.entropy_round(obs, round_idx=0)
+
+    def entropy_round(
+        self,
+        obs: torch.Tensor,
+        round_idx: int = 0
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         if not self.trainable:
             zeros = torch.zeros((obs.size(0), self.num_channel_sets), device=obs.device, dtype=obs.dtype)
             return zeros, zeros
-        freq_dist, amp_dist = self._distributions(obs)
+        freq_dist, amp_dist = self._distributions(obs, round_idx=round_idx)
         freq_entropy = freq_dist.entropy() + self._freq_log_scale
         amp_entropy = amp_dist.entropy() + self._amp_log_scale
         return freq_entropy, amp_entropy
@@ -588,7 +729,12 @@ class LinearReadoutHead(nn.Module):
 
 
 class DecoderNetwork(nn.Module):
-    """Decoder that emits logits over the full combinatorial action space."""
+    """Decoder that emits logits over the full combinatorial action space.
+
+    When same-frame encoding is enabled the decoder consumes a concatenation of
+    spike rounds. That increases readout capacity, so treat any gain as
+    provisional until it beats decoder ablations.
+    """
 
     def __init__(self, spike_feature_dim: int, config: PPOConfig, num_joint_actions: int):
         super().__init__()
@@ -773,12 +919,13 @@ class PPOPolicy(nn.Module):
         # Components
         self.encoder = EncoderNetwork(obs_dim, config, num_channel_sets=self.num_channel_sets)
         self.decoder = DecoderNetwork(
-            spike_feature_dim=self.num_channel_sets,
+            spike_feature_dim=self.num_channel_sets * self.encoder.num_rounds,
             config=config,
             num_joint_actions=self.num_joint_actions
         )
         self.value_net = ValueNetwork(obs_dim, config)
         self._stim_cache = LRUCache(maxsize=256)
+        self.num_stim_rounds = self.encoder.num_rounds
 
         # Lookup from channel index to group index for spike counting
         self.channel_lookup: Dict[int, int] = {}
@@ -828,6 +975,7 @@ class PPOPolicy(nn.Module):
             log_probs: (batch_size,)
             entropy: (batch_size,)
         """
+        spike_features = self.flatten_spike_rounds_tensor(spike_features)
         joint_logits = self.decoder(spike_features)
         joint_dist = Categorical(logits=joint_logits)
         if deterministic:
@@ -898,15 +1046,49 @@ class PPOPolicy(nn.Module):
             return np.random.rand(*spike_features.shape).astype(spike_features.dtype, copy=False)
         return spike_features
 
+    def flatten_spike_rounds_tensor(self, spike_features: torch.Tensor) -> torch.Tensor:
+        if spike_features.dim() == 3:
+            return spike_features.reshape(spike_features.size(0), -1)
+        return spike_features
+
+    def flatten_spike_rounds_numpy(self, spike_features: np.ndarray) -> np.ndarray:
+        if spike_features.ndim == 2:
+            return spike_features.reshape(-1)
+        if spike_features.ndim == 3:
+            return spike_features.reshape(spike_features.shape[0], -1)
+        return spike_features
+
     def sample_encoder(
         self,
         obs: torch.Tensor,
         deterministic: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        frequencies, amplitudes, freq_log_prob, amp_log_prob, freq_entropy, amp_entropy = self.encoder.sample(obs, deterministic=deterministic)
-        encoder_log_prob = (freq_log_prob + amp_log_prob).sum(dim=-1)
-        encoder_entropy = (freq_entropy + amp_entropy).sum(dim=-1)
-        return frequencies, amplitudes, encoder_log_prob, encoder_entropy
+        round_frequencies = []
+        round_amplitudes = []
+        round_log_probs = []
+        round_entropies = []
+
+        for round_idx in range(self.num_stim_rounds):
+            frequencies, amplitudes, freq_log_prob, amp_log_prob, freq_entropy, amp_entropy = self.encoder.sample_round(
+                obs,
+                round_idx=round_idx,
+                deterministic=deterministic
+            )
+            round_frequencies.append(frequencies)
+            round_amplitudes.append(amplitudes)
+            round_log_probs.append((freq_log_prob + amp_log_prob).sum(dim=-1))
+            round_entropies.append((freq_entropy + amp_entropy).sum(dim=-1))
+
+        encoder_log_prob = torch.stack(round_log_probs, dim=0).sum(dim=0)
+        encoder_entropy = torch.stack(round_entropies, dim=0).sum(dim=0)
+        if self.num_stim_rounds == 1:
+            return round_frequencies[0], round_amplitudes[0], encoder_log_prob, encoder_entropy
+        return (
+            torch.stack(round_frequencies, dim=1),
+            torch.stack(round_amplitudes, dim=1),
+            encoder_log_prob,
+            encoder_entropy
+        )
 
     def evaluate_actions(
         self,
@@ -938,6 +1120,7 @@ class PPOPolicy(nn.Module):
             values: (batch_size, 1)
             entropy: (batch_size,)
         """
+        spike_features = self.flatten_spike_rounds_tensor(spike_features)
         joint_logits = self.decoder(spike_features)
         joint_dist = Categorical(logits=joint_logits)
         forward_map = self.joint_forward_map.to(spike_features.device)
@@ -963,10 +1146,26 @@ class PPOPolicy(nn.Module):
         if getattr(self.config, 'encoder_trainable', False):
             if stim_frequencies is None or stim_amplitudes is None:
                 raise ValueError("Stim frequencies/amplitudes required when encoder is trainable.")
-            freq_log_prob, amp_log_prob = self.encoder.log_prob(obs, stim_frequencies, stim_amplitudes)
-            freq_entropy, amp_entropy = self.encoder.entropy(obs)
-            encoder_log_prob = (freq_log_prob + amp_log_prob).sum(dim=-1)
-            encoder_entropy = (freq_entropy + amp_entropy).sum(dim=-1)
+            if stim_frequencies.dim() == 3:
+                round_log_probs = []
+                round_entropies = []
+                for round_idx in range(stim_frequencies.size(1)):
+                    freq_log_prob, amp_log_prob = self.encoder.log_prob_round(
+                        obs,
+                        stim_frequencies[:, round_idx, :],
+                        stim_amplitudes[:, round_idx, :],
+                        round_idx=round_idx
+                    )
+                    freq_entropy, amp_entropy = self.encoder.entropy_round(obs, round_idx=round_idx)
+                    round_log_probs.append((freq_log_prob + amp_log_prob).sum(dim=-1))
+                    round_entropies.append((freq_entropy + amp_entropy).sum(dim=-1))
+                encoder_log_prob = torch.stack(round_log_probs, dim=0).sum(dim=0)
+                encoder_entropy = torch.stack(round_entropies, dim=0).sum(dim=0)
+            else:
+                freq_log_prob, amp_log_prob = self.encoder.log_prob(obs, stim_frequencies, stim_amplitudes)
+                freq_entropy, amp_entropy = self.encoder.entropy(obs)
+                encoder_log_prob = (freq_log_prob + amp_log_prob).sum(dim=-1)
+                encoder_entropy = (freq_entropy + amp_entropy).sum(dim=-1)
             log_probs = log_probs + encoder_log_prob
 
         values = self.value_net(obs)
@@ -1009,6 +1208,9 @@ class PPOPolicy(nn.Module):
             spike_counts: (num_channel_sets,) array of spike counts per channel set
         """
         try:
+            artifact_wait = max(0.0, float(getattr(self.config, 'spike_artifact_wait_s', 0.0)))
+            if artifact_wait > 0.0:
+                time.sleep(artifact_wait)
             # Receive spike data packet
             packet, addr = spike_socket.recvfrom(udp_protocol.SPIKE_PACKET_SIZE)
             timestamp, spike_counts = udp_protocol.unpack_spike_data(packet)
@@ -1127,6 +1329,9 @@ class VizDoomEnv:
 
     def reset(self) -> np.ndarray:
         """Reset environment and return initial observation."""
+        reset_delay = max(0.0, float(getattr(self.config, 'episode_reset_delay_s', 0.0)))
+        if reset_delay > 0.0:
+            time.sleep(reset_delay)
         self.game.new_episode()
         self.episode_reward = 0
         self.episode_length = 0
@@ -1849,7 +2054,7 @@ class PPOTrainer:
         # Socket for receiving spike data from CL1
         self.spike_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.spike_socket.bind(("0.0.0.0", self.config.cl1_spike_port))
-        self.spike_socket.settimeout(0.1)  # 100ms timeout for receiving spikes
+        self.spike_socket.settimeout(float(getattr(self.config, 'udp_timeout_s', 5.0)))
         print(f"[SUCCESS] Listening for spike data on port {self.config.cl1_spike_port}")
 
         # Socket for sending event metadata to CL1
@@ -2715,9 +2920,13 @@ class PPOTrainer:
 
                 freq_np = frequencies[0].cpu().numpy()
                 amp_np = amplitudes[0].cpu().numpy()
+                round_freqs = [freq_np] if freq_np.ndim == 1 else [freq_np[idx] for idx in range(freq_np.shape[0])]
+                round_amps = [amp_np] if amp_np.ndim == 1 else [amp_np[idx] for idx in range(amp_np.shape[0])]
+                round_spikes = []
 
-                # Send stimulation command via UDP
-                self.policy.apply_stimulation(self.stim_socket, freq_np, amp_np)
+                for round_freq, round_amp in zip(round_freqs, round_amps):
+                    self.policy.apply_stimulation(self.stim_socket, round_freq, round_amp)
+                    round_spikes.append(self.policy.collect_spikes(self.spike_socket))
 
                 # Wait for tick timing
                 current_time = time.time()
@@ -2726,8 +2935,7 @@ class PPOTrainer:
                     time.sleep(sleep_time)
                 next_tick_time += tick_interval
 
-                # Receive spikes from CL1 via UDP
-                spike_counts = self.policy.collect_spikes(self.spike_socket)
+                spike_counts = self.policy.flatten_spike_rounds_numpy(np.stack(round_spikes, axis=0))
                 spike_counts = self.policy.ablate_spike_features_numpy(spike_counts)
 
                 # Decode spikes to action
@@ -2969,7 +3177,9 @@ class PPOTrainer:
 
             with torch.no_grad():
                 frequencies, amplitudes, enc_log_prob, enc_entropy = self.policy.sample_encoder(obs_tensor)
-                spike_tensor = self.policy.ablate_spike_features_tensor(frequencies)
+                spike_tensor = self.policy.ablate_spike_features_tensor(
+                    self.policy.flatten_spike_rounds_tensor(frequencies)
+                )
                 (
                     forward_actions,
                     strafe_actions,
@@ -3397,7 +3607,7 @@ class PPOTrainer:
                 self.total_steps
             )
 
-        sample_features = spike_features
+        sample_features = self.policy.flatten_spike_rounds_tensor(spike_features)
         if sample_features.size(0) > 1024:
             sample_features = sample_features[:1024]
         decoder_metrics = self.policy.decoder.compute_weight_bias_metrics(sample_features)
@@ -3757,7 +3967,10 @@ def watch(checkpoint_path: str, config: PPOConfig, device: str = 'cpu'):
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get('policy_state_dict', {})
-    if any(key.startswith('encoder.freq_alpha_head') for key in state_dict):
+    if any(
+        key.startswith('encoder.freq_alpha_head') or key.startswith('encoder.freq_alpha_heads')
+        for key in state_dict
+    ):
         config.encoder_trainable = True
     if any(key.startswith('encoder.cnn') for key in state_dict):
         config.encoder_use_cnn = True
@@ -3833,6 +4046,17 @@ def main():
                         help='Ablate spike features before decoder (diagnostic)')
     parser.add_argument('--encoder-use-cnn', action='store_true',
                         help='Use CNN encoder over screen buffer in addition to scalar features')
+    parser.add_argument('--encoder-same-frame-encoding', action='store_true',
+                        help='Experimental: repeat one observation through multiple encoder views before decoding stacked spikes')
+    parser.add_argument('--encoder-same-frame-repeats', type=int, default=3,
+                        help='Number of same-frame stimulation rounds to run when same-frame encoding is enabled')
+    parser.add_argument('--encoder-same-frame-methods', nargs='+', default=None,
+                        choices=['raw', 'edge', 'contrast'],
+                        help='Ordered same-frame view transforms to use when same-frame encoding is enabled; raw=original grayscale, edge=Sobel magnitude, contrast=centered high-contrast view, missing rounds default to raw')
+    parser.add_argument('--spike-artifact-wait-ms', type=float, default=50.0,
+                        help='Milliseconds to wait after stimulation before reading the CL1 spike reply')
+    parser.add_argument('--episode-reset-delay-s', type=float, default=1.0,
+                        help='Seconds to wait between Doom episodes so membrane potentials can settle')
 
     # NOTE: (2025-19-11, jz/al) Add additional configuration, including visualisation
     parser.add_argument('--show_window',
@@ -3889,6 +4113,12 @@ def main():
     config.decoder_ablation_mode = args.decoder_ablation
     if args.encoder_use_cnn:
         config.encoder_use_cnn = True
+    config.encoder_same_frame_encoding = args.encoder_same_frame_encoding
+    config.encoder_same_frame_repeats = max(1, int(args.encoder_same_frame_repeats))
+    if args.encoder_same_frame_methods:
+        config.encoder_same_frame_methods = tuple(args.encoder_same_frame_methods)
+    config.spike_artifact_wait_s = max(0.0, args.spike_artifact_wait_ms / 1000.0)
+    config.episode_reset_delay_s = max(0.0, args.episode_reset_delay_s)
 
     # Set UDP configuration from CLI arguments
     config.cl1_host = args.cl1_host

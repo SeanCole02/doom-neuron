@@ -35,6 +35,9 @@ We train an encoder in our PPO policy that dictates the stimulation pattern (fre
 - `encoder_trainable=True`, `encoder_entropy_coef=-0.10`: encoder keeps learning with a negative entropy coefficient that encourages confident (low-variance) stimulation because of the Beta distribution head.
 - `decoder_ablation_mode='none'`: swap to `random` or `zero` to test policy robustness when decoder contributions are removed.
 - `encoder_use_cnn=True`, `encoder_cnn_channels=16`, `encoder_cnn_downsample=4`: lightweight CNN for spatial features; bump channels/downsample when raising resolution, can disable if needed to rely soley on raycasting data.
+- `encoder_same_frame_encoding=False`, `encoder_same_frame_repeats=3`, `encoder_same_frame_methods=('raw', 'edge', 'contrast')`: optional same-frame encoding (SFE) repeats one Doom observation through a configurable number of encoder rounds and concatenates the resulting spike rounds before decoding. If you provide fewer methods than repeats, the remaining rounds default to `raw`. This is experimental in this repo, has not yet been ablation-tested, and can make decoder overfitting easier because the decoder sees a larger stacked spike vector.
+- `spike_artifact_wait_s=0.050`: the training side waits 50 ms after each UDP stimulation before reading the CL1 spike reply, and the CL1 interface now exposes a matching `--artifact-wait-ms 50 --collect-window-ms 50` device-side window so residual stimulation artifacts are less likely to leak into the decoder input.
+- `episode_reset_delay_s=1.0`: wait one second between Doom episodes so membrane potentials can settle before the next reset.
 - `episode_positive_feedback_event=None`, `episode_negative_feedback_event=None`: default to global reward feedback; set to event keys if you need action-specific filters.
 - Surprise scaling knobs (`feedback_surprise_gain`, `_max_scale`, `_freq_gain`, `_amp_gain` variants): modulate how unexpected TD errors boost frequency/amplitude; higher values emphasize novel negative events.
 - `enemy_distance_normalization=1312.0`: normalization constant for distance-based shaping; leave untouched unless you change WAD geometry or measurement units.
@@ -85,3 +88,17 @@ python3 ppo_doom.py \
 ## Running Local Server + Connecting to CL1 ##
 
 See [USAGE.md](USAGE.md)
+
+## Same-Frame Encoding Notes
+
+Same-frame encoding in this repo follows the broad `diffusion-neuron` idea of repeating a single input frame across multiple stimulation rounds, but the view transforms are tuned for the current Doom RL setup rather than copied exactly. The round count is configurable. The default round template is `raw`, `edge`, and `contrast`, and any missing configured rounds fall back to `raw`.
+
+Available SFE types:
+- `raw`: passes the encoder the original grayscale screen view with no extra preprocessing. Use this as the baseline round.
+- `edge`: applies a Sobel edge-magnitude transform so the round emphasizes walls, enemy outlines, and other strong geometric transitions.
+- `contrast`: recenters the grayscale frame around its own mean and pushes differences through a `tanh` contrast curve, which highlights bright/dark deviations without explicitly collapsing the view to edges.
+
+This should be treated as experimental:
+- It has not yet been ablation-tested against the single-round baseline in this repo.
+- The decoder now receives stacked spike rounds, which increases decoder capacity and can let it overfit without actually relying on useful CL1 signal.
+- If you enable it, compare against `--decoder-ablation random` or `zero` before trusting any reward gain.

@@ -41,7 +41,7 @@ For visualisation, open `./visualisation.html` in a web browser, update the foll
 ### 1. Start CL1 Neural Interface (on CL1 device)
 
 ```bash
-python cl1_neural_interface.py --training-host <TRAINING_IP> --tick-frequency 10
+python cl1_neural_interface.py --training-host <TRAINING_IP> --tick-frequency 10 --artifact-wait-ms 50 --collect-window-ms 50
 ```
 
 ### 2. Start Training Server (on training machine)
@@ -78,6 +78,8 @@ python cl1_neural_interface.py --training-host 192.168.1.100
 | `--event-port` | int | 12347 | Port for receiving event metadata |
 | `--feedback-port` | int | 12348 | Port for receiving feedback commands |
 | `--tick-frequency` | int | 10 | Neural loop frequency in Hz |
+| `--artifact-wait-ms` | float | 50 | Milliseconds to ignore spikes after stimulation before counting |
+| `--collect-window-ms` | float | 50 | Milliseconds to accumulate spikes after the artifact-clear window |
 | `--recording-path` | str | ./recordings | Directory for saving recordings |
 
 ### Example with Custom Ports
@@ -90,6 +92,8 @@ python cl1_neural_interface.py \
     --event-port 12347 \
     --feedback-port 12348 \
     --tick-frequency 10 \
+    --artifact-wait-ms 50 \
+    --collect-window-ms 50 \
     --recording-path /data/recordings
 ```
 
@@ -158,8 +162,35 @@ The scenario is set via `TrainingConfig.doom_config` in code (not a CLI argument
 |----------|------|---------|-------------|
 | `--decoder-ablation` | str | none | Ablation mode (none, zero, random) |
 | `--encoder-use-cnn` | flag | False | Enable CNN encoder for screen buffer |
+| `--encoder-same-frame-encoding` | flag | False | Experimental same-frame encoding with stacked spike rounds |
+| `--encoder-same-frame-repeats` | int | 3 | Number of repeated same-frame stimulation rounds |
+| `--encoder-same-frame-methods` | list | raw edge contrast | Ordered same-frame transforms for repeated CL1 stimulation; missing rounds default to raw |
+| `--spike-artifact-wait-ms` | float | 50 | Milliseconds to wait after stimulation before reading spike reply |
+| `--episode-reset-delay-s` | float | 1.0 | Seconds to wait between Doom episodes so membrane state can settle |
 
 ## Common Usage Scenarios
+
+### Experimental Same-Frame Encoding
+
+`--encoder-same-frame-encoding` repeats one observation across multiple CL1 stim rounds and stacks the returned spike vectors before decoding. The repetition count is controlled with `--encoder-same-frame-repeats`. If you provide fewer methods than repeats, the remaining rounds default to `raw`. This has not been ablation-tested in this repo yet and can make decoder overfitting easier, so treat it as experimental.
+
+Available SFE types:
+- `raw`: original grayscale frame, no extra preprocessing.
+- `edge`: Sobel edge magnitude, useful when you want contours and geometry to dominate the round.
+- `contrast`: mean-centered high-contrast grayscale view, useful when you want intensity deviations emphasized without reducing the frame to pure edges.
+
+```bash
+python training_server.py \
+    --mode train \
+    --device cuda \
+    --cl1-host 192.168.1.50 \
+    --encoder-use-cnn \
+    --encoder-same-frame-encoding \
+    --encoder-same-frame-repeats 3 \
+    --encoder-same-frame-methods raw edge contrast \
+    --spike-artifact-wait-ms 50 \
+    --episode-reset-delay-s 1.0
+```
 
 ### Local Development (Same Machine)
 

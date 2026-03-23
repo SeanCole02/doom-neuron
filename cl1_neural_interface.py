@@ -10,6 +10,7 @@ All PyTorch models and game logic run on the remote training system.
 """
 
 import argparse
+import math
 import os
 import socket
 import time
@@ -100,6 +101,8 @@ class CL1NeuralInterface:
         feedback_port: int,
         tick_frequency_hz: int = 240,
         recording_path: str = "/data/recordings/doom-neuron",
+        artifact_wait_s: float = 0.050,
+        collect_window_s: float = 0.050,
     ):
         self.training_host = training_host
         self.stim_port = stim_port
@@ -108,6 +111,10 @@ class CL1NeuralInterface:
         self.feedback_port = feedback_port
         self.tick_frequency_hz = tick_frequency_hz
         self.recording_path = recording_path
+        self.artifact_wait_s = max(0.0, artifact_wait_s)
+        self.collect_window_s = max(0.0, collect_window_s)
+        self.artifact_ticks = max(1, int(math.ceil(self.artifact_wait_s * self.tick_frequency_hz)))
+        self.collect_ticks = max(1, int(math.ceil(self.collect_window_s * self.tick_frequency_hz)))
 
         # Create config and channel sets
         self.config = CL1Config()
@@ -297,6 +304,8 @@ class CL1NeuralInterface:
         print(f"Tick frequency: {self.tick_frequency_hz} Hz")
         print(f"Expected packet rate: {self.tick_frequency_hz} packets/sec")
         print(f"Channel groups: {len(self.channel_groups)}")
+        print(f"Artifact clear: {self.artifact_wait_s:.3f}s ({self.artifact_ticks} ticks)")
+        print(f"Spike collect: {self.collect_window_s:.3f}s ({self.collect_ticks} ticks)")
         print("="*70 + "\n")
 
         self.setup_sockets()
@@ -343,6 +352,10 @@ class CL1NeuralInterface:
             last_stats_time = time.time()
             tick_count = 0
             recording_stopped = False  # Track if we've already stopped
+            pending_spike_reply = False
+            pending_spike_counts = np.zeros(len(self.channel_groups), dtype=np.float32)
+            artifact_ticks_remaining = 0
+            collect_ticks_remaining = 0
 
             try:
                 # Main hardware loop
@@ -363,6 +376,10 @@ class CL1NeuralInterface:
 
                         # Apply stimulation to hardware
                         self.apply_stimulation(neurons, frequencies, amplitudes)
+                        pending_spike_reply = True
+                        pending_spike_counts = np.zeros(len(self.channel_groups), dtype=np.float32)
+                        artifact_ticks_remaining = self.artifact_ticks
+                        collect_ticks_remaining = self.collect_ticks
 
                         # Log latency occasionally
                         if self.packets_received % 1000 == 0:
@@ -380,20 +397,24 @@ class CL1NeuralInterface:
                         frequencies = np.zeros(len(self.channel_groups), dtype=np.float32)
                         amplitudes = np.zeros(len(self.channel_groups), dtype=np.float32)
 
-                    # Collect spikes from this tick
-                    spike_counts = self.collect_spikes(tick)
-
-                    # Send spike data back to training system
-                    try:
-                        spike_packet = udp_protocol.pack_spike_data(spike_counts)
-                        self.spike_socket.sendto(
-                            spike_packet,
-                            (self.training_host, self.spike_port)
-                        )
-                        self.packets_sent += 1
-
-                    except Exception as e:
-                        print(f"Error sending spike data: {e}")
+                    if pending_spike_reply:
+                        if artifact_ticks_remaining > 0:
+                            artifact_ticks_remaining -= 1
+                        elif collect_ticks_remaining > 0:
+                            pending_spike_counts += self.collect_spikes(tick)
+                            collect_ticks_remaining -= 1
+                        else:
+                            try:
+                                spike_packet = udp_protocol.pack_spike_data(pending_spike_counts)
+                                self.spike_socket.sendto(
+                                    spike_packet,
+                                    (self.training_host, self.spike_port)
+                                )
+                                self.packets_sent += 1
+                            except Exception as e:
+                                print(f"Error sending spike data: {e}")
+                            finally:
+                                pending_spike_reply = False
 
                     # Check for event metadata (non-blocking)
                     try:
@@ -541,6 +562,18 @@ def main():
         help='Frequency to run neurons.loop() in Hz (default: 10)'
     )
     parser.add_argument(
+        '--artifact-wait-ms',
+        type=float,
+        default=50.0,
+        help='Milliseconds to ignore spikes after stimulation before counting begins (default: 50)'
+    )
+    parser.add_argument(
+        '--collect-window-ms',
+        type=float,
+        default=50.0,
+        help='Milliseconds to accumulate spikes after the artifact-clear wait (default: 50)'
+    )
+    parser.add_argument(
         '--recording-path',
         type=str,
         default='./recordings',
@@ -557,6 +590,8 @@ def main():
         feedback_port=args.feedback_port,
         tick_frequency_hz=args.tick_frequency,
         recording_path=args.recording_path,
+        artifact_wait_s=max(0.0, args.artifact_wait_ms / 1000.0),
+        collect_window_s=max(0.0, args.collect_window_ms / 1000.0),
     )
 
     interface.run()
