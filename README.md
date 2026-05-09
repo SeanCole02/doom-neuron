@@ -29,11 +29,12 @@ We train an encoder in our PPO policy that dictates the stimulation pattern (fre
 - `use_reward_feedback`: Uses rewards to drive postive/negative feedback rather than action specific feedback, if you do decide to use action feedback, tweak `event_feedback_settings` accordingly, these were values were arbitarily set.
 - `decoder_enforce_nonnegative=False`, `decoder_freeze_weights=False`: decoder stays free to mirror encoder intent; set to True if you need tight control over decoded spike weights.
 - `decoder_zero_bias=True`: keeps bias at zero so decoded actions depend solely on encoder output; helped prevent a lot of decoder-sided learning in testing but may be different on actual hardware since the sdk spikes were random; this should definitely be tested with ablations!
+- `center_spike_features=True`, `spike_centering_beta=0.99`: subtract a running per-channel spike baseline before the decoder so random nonzero spike rates cannot act as an implicit decoder bias.
 - `decoder_use_mlp=False`, `decoder_mlp_hidden=32`: default linear decoder keeps hardware mapping transparent; enable the MLP when you require richer non-linear policies (expect higher sample complexity, decoder also tends to start becoming a policy head but might be due to random spike noise from the SDK).
 - `decoder_weight_l2_coef=0.0`, `decoder_bias_l2_coef=0.0`: L2 regularization hooks, raise these only if decoder weights diverge on long runs.
 - `wall_ray_count=12`, `wall_ray_max_range=64`, `wall_depth_max_distance=18.0`: ray-cast features tuned for corridor geometry; adjust if you alter field-of-view or scenario scale.
 - `encoder_trainable=True`, `encoder_entropy_coef=-0.10`: encoder keeps learning with a negative entropy coefficient that encourages confident (low-variance) stimulation because of the Beta distribution head.
-- `decoder_ablation_mode='none'`: swap to `random` or `zero` to test policy robustness when decoder contributions are removed.
+- `decoder_ablation_mode='none'`: swap to `zero` to test policy robustness when decoder contributions are removed. Use `cl1_neural_interface.py --spike-ablation random` for random spike-source tests so the training server receives random spike packets without the local SDK replay/H5 path.
 - `encoder_use_cnn=True`, `encoder_cnn_channels=16`, `encoder_cnn_downsample=4`: lightweight CNN for spatial features; bump channels/downsample when raising resolution, can disable if needed to rely soley on raycasting data.
 - `encoder_same_frame_encoding=False`, `encoder_same_frame_repeats=3`, `encoder_same_frame_methods=('raw', 'edge', 'contrast')`: optional same-frame encoding (SFE) repeats one Doom observation through a configurable number of encoder rounds and concatenates the resulting spike rounds before decoding. If you provide fewer methods than repeats, the remaining rounds default to `raw`. This is experimental in this repo, has not yet been ablation-tested, and can make decoder overfitting easier because the decoder sees a larger stacked spike vector.
 - `spike_artifact_wait_s=0.050`: the training side waits 50 ms after each UDP stimulation before reading the CL1 spike reply, and the CL1 interface now exposes a matching `--artifact-wait-ms 50 --collect-window-ms 50` device-side window so residual stimulation artifacts are less likely to leak into the decoder input.
@@ -101,4 +102,4 @@ Available SFE types:
 This should be treated as experimental:
 - It has not yet been ablation-tested against the single-round baseline in this repo.
 - The decoder now receives stacked spike rounds, which increases decoder capacity and can let it overfit without actually relying on useful CL1 signal.
-- If you enable it, compare against `--decoder-ablation random` or `zero` before trusting any reward gain.
+- If you enable it, compare against `--decoder-ablation zero` and `cl1_neural_interface.py --spike-ablation random` before trusting any reward gain.

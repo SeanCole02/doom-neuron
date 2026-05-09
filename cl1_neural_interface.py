@@ -15,10 +15,8 @@ import os
 import socket
 import time
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
-import cl
-from cl.data_stream import DataStream
 import udp_protocol
 
 # LRU Cache for stimulation designs (copied from ppo_doom.py)
@@ -68,17 +66,17 @@ class CL1Config:
         # Channel 64 is out of hardware range but listed as forbidden; still exclude it explicitly.
         self.all_channels = [i for i in range(64) if i not in {0, 4, 7, 56, 63}]
 
-    def create_channel_sets(self):
+    def create_channel_sets(self, cl_module):
         """Create CL SDK ChannelSet objects."""
-        self.all_channels_set           = cl.ChannelSet(*self.all_channels)
-        self.encoding_channels_set      = cl.ChannelSet(*self.encoding_channels)
-        self.move_forward_channels_set  = cl.ChannelSet(*self.move_forward_channels)
-        self.move_backward_channels_set = cl.ChannelSet(*self.move_backward_channels)
-        self.move_left_channels_set     = cl.ChannelSet(*self.move_left_channels)
-        self.move_right_channels_set    = cl.ChannelSet(*self.move_right_channels)
-        self.turn_left_channels_set     = cl.ChannelSet(*self.turn_left_channels)
-        self.turn_right_channels_set    = cl.ChannelSet(*self.turn_right_channels)
-        self.attack_channels_set        = cl.ChannelSet(*self.attack_channels)
+        self.all_channels_set           = cl_module.ChannelSet(*self.all_channels)
+        self.encoding_channels_set      = cl_module.ChannelSet(*self.encoding_channels)
+        self.move_forward_channels_set  = cl_module.ChannelSet(*self.move_forward_channels)
+        self.move_backward_channels_set = cl_module.ChannelSet(*self.move_backward_channels)
+        self.move_left_channels_set     = cl_module.ChannelSet(*self.move_left_channels)
+        self.move_right_channels_set    = cl_module.ChannelSet(*self.move_right_channels)
+        self.turn_left_channels_set     = cl_module.ChannelSet(*self.turn_left_channels)
+        self.turn_right_channels_set    = cl_module.ChannelSet(*self.turn_right_channels)
+        self.attack_channels_set        = cl_module.ChannelSet(*self.attack_channels)
 
 
 class CL1NeuralInterface:
@@ -103,6 +101,9 @@ class CL1NeuralInterface:
         recording_path: str = "/data/recordings/doom-neuron",
         artifact_wait_s: float = 0.050,
         collect_window_s: float = 0.050,
+        spike_ablation_mode: str = "none",
+        random_spike_rate_hz: float = 5.0,
+        spike_ablation_seed: Optional[int] = None,
     ):
         self.training_host = training_host
         self.stim_port = stim_port
@@ -113,23 +114,32 @@ class CL1NeuralInterface:
         self.recording_path = recording_path
         self.artifact_wait_s = max(0.0, artifact_wait_s)
         self.collect_window_s = max(0.0, collect_window_s)
-        self.artifact_ticks = max(1, int(math.ceil(self.artifact_wait_s * self.tick_frequency_hz)))
+        self.artifact_ticks = int(math.ceil(self.artifact_wait_s * self.tick_frequency_hz))
         self.collect_ticks = max(1, int(math.ceil(self.collect_window_s * self.tick_frequency_hz)))
+        self.spike_ablation_mode = str(spike_ablation_mode).strip().lower()
+        if self.spike_ablation_mode not in {"none", "random"}:
+            raise ValueError("spike_ablation_mode must be one of: none, random")
+        self.random_spike_rate_hz = max(0.0, float(random_spike_rate_hz))
+        self.spike_ablation_rng = np.random.default_rng(spike_ablation_seed)
 
         # Create config and channel sets
         self.config = CL1Config()
-        self.config.create_channel_sets()
+        self.cl = None
+        if self.spike_ablation_mode != "random":
+            import cl
+            self.cl = cl
+            self.config.create_channel_sets(cl)
 
         # Build channel groups for stimulation application
-        self.channel_groups: List[Tuple[str, List[int], cl.ChannelSet]] = [
-            ('encoding', self.config.encoding_channels, self.config.encoding_channels_set),
-            ('move_forward', self.config.move_forward_channels, self.config.move_forward_channels_set),
-            ('move_backward', self.config.move_backward_channels, self.config.move_backward_channels_set),
-            ('move_left', self.config.move_left_channels, self.config.move_left_channels_set),
-            ('move_right', self.config.move_right_channels, self.config.move_right_channels_set),
-            ('turn_left', self.config.turn_left_channels, self.config.turn_left_channels_set),
-            ('turn_right', self.config.turn_right_channels, self.config.turn_right_channels_set),
-            ('attack', self.config.attack_channels, self.config.attack_channels_set),
+        self.channel_groups: List[Tuple[str, List[int], Any]] = [
+            ('encoding', self.config.encoding_channels, getattr(self.config, 'encoding_channels_set', None)),
+            ('move_forward', self.config.move_forward_channels, getattr(self.config, 'move_forward_channels_set', None)),
+            ('move_backward', self.config.move_backward_channels, getattr(self.config, 'move_backward_channels_set', None)),
+            ('move_left', self.config.move_left_channels, getattr(self.config, 'move_left_channels_set', None)),
+            ('move_right', self.config.move_right_channels, getattr(self.config, 'move_right_channels_set', None)),
+            ('turn_left', self.config.turn_left_channels, getattr(self.config, 'turn_left_channels_set', None)),
+            ('turn_right', self.config.turn_right_channels, getattr(self.config, 'turn_right_channels_set', None)),
+            ('attack', self.config.attack_channels, getattr(self.config, 'attack_channels_set', None)),
         ]
 
         # Build channel lookup for spike counting
@@ -179,7 +189,7 @@ class CL1NeuralInterface:
 
     def apply_stimulation(
         self,
-        neurons: cl.Neurons,
+        neurons: Any,
         frequencies: np.ndarray,
         amplitudes: np.ndarray
     ):
@@ -199,7 +209,7 @@ class CL1NeuralInterface:
 
         # NOTE: (2025-11-25 jz/al) Rather than applying stim to all channel groups, stim only the encoding channels
         for i, channel_num in enumerate(self.config.encoding_channels):
-            channel_set = cl.ChannelSet(channel_num)
+            channel_set = self.cl.ChannelSet(channel_num)
 
             if channel_set is None:
                 continue
@@ -209,11 +219,11 @@ class CL1NeuralInterface:
             cache_key = (i, freq_value, round(amplitude_value, 4))
 
             def _factory():
-                stim_design = cl.StimDesign(
+                stim_design = self.cl.StimDesign(
                     self.config.phase1_duration, -amplitude_value,
                     self.config.phase2_duration, amplitude_value
                 )
-                burst_design = cl.BurstDesign(self.config.burst_count, freq_value)
+                burst_design = self.cl.BurstDesign(self.config.burst_count, freq_value)
                 return (stim_design, burst_design)
 
             stim_design, burst_design = self._stim_cache.get_or_set(cache_key, _factory)
@@ -244,7 +254,7 @@ class CL1NeuralInterface:
 
     def apply_feedback_command(
         self,
-        neurons: cl.Neurons,
+        neurons: Any,
         feedback_type: str,
         channels: list,
         frequency: int,
@@ -269,7 +279,7 @@ class CL1NeuralInterface:
         if feedback_type == "interrupt":
             # Interrupt ongoing stimulation on specified channels
             if channels:
-                channel_set = cl.ChannelSet(*channels)
+                channel_set = self.cl.ChannelSet(*channels)
                 neurons.interrupt(channel_set)
             return
 
@@ -277,17 +287,17 @@ class CL1NeuralInterface:
         if not channels or frequency <= 0 or amplitude <= 0:
             return
 
-        channel_set = cl.ChannelSet(*channels)
+        channel_set = self.cl.ChannelSet(*channels)
 
         # Create stimulation design (same as encoder stimulation)
         cache_key = (feedback_type, tuple(channels), frequency, round(amplitude, 4))
 
         def _factory():
-            stim_design = cl.StimDesign(
+            stim_design = self.cl.StimDesign(
                 self.config.phase1_duration, -amplitude,
                 self.config.phase2_duration, amplitude
             )
-            burst_design = cl.BurstDesign(pulses, frequency)
+            burst_design = self.cl.BurstDesign(pulses, frequency)
             return (stim_design, burst_design)
 
         stim_design, burst_design = self._stim_cache.get_or_set(cache_key, _factory)
@@ -298,6 +308,10 @@ class CL1NeuralInterface:
 
     def run(self):
         """Main loop: receive stim commands, apply to hardware, send spikes back."""
+        if self.spike_ablation_mode == "random":
+            self.run_random_spike_ablation()
+            return
+
         print("\n" + "="*70)
         print("CL1 Neural Interface Server")
         print("="*70)
@@ -310,7 +324,7 @@ class CL1NeuralInterface:
 
         self.setup_sockets()
 
-        with cl.open() as neurons:
+        with self.cl.open() as neurons:
             print("[SUCCESS] Connected to CL1 hardware")
 
             # Get all used channels for recording
@@ -518,6 +532,141 @@ class CL1NeuralInterface:
                 print(f"Total spikes collected: {self.total_spikes}")
                 print("="*70 + "\n")
 
+    def _generate_random_ablation_spike_counts(self) -> np.ndarray:
+        """Generate per-group random spike counts without touching the CL SDK mock."""
+        window_s = max(self.collect_window_s, 1.0 / max(1, self.tick_frequency_hz))
+        counts = np.zeros(len(self.channel_groups), dtype=np.float32)
+        for idx, (_, channel_list, _) in enumerate(self.channel_groups):
+            expected = self.random_spike_rate_hz * window_s * len(channel_list)
+            counts[idx] = self.spike_ablation_rng.poisson(expected)
+        self.total_spikes += int(counts.sum())
+        return counts
+
+    def run_random_spike_ablation(self):
+        """Run a lightweight random-spike UDP bridge for local high-rate training."""
+        print("\n" + "="*70)
+        print("CL1 Random Spike Ablation Interface")
+        print("="*70)
+        print("Spike ablation: random (CL SDK/H5 replay bypassed)")
+        print(f"Tick frequency: {self.tick_frequency_hz} Hz")
+        print(f"Expected packet rate: {self.tick_frequency_hz} packets/sec")
+        print(f"Channel groups: {len(self.channel_groups)}")
+        print(f"Artifact clear: {self.artifact_wait_s:.3f}s ({self.artifact_ticks} ticks)")
+        print(f"Spike collect: {self.collect_window_s:.3f}s ({self.collect_ticks} ticks)")
+        print(f"Random per-channel spike rate: {self.random_spike_rate_hz:.3f} Hz")
+        print("="*70 + "\n")
+
+        self.setup_sockets()
+        print("\nWaiting for stimulation commands...\n")
+
+        tick_interval = 1.0 / max(1, self.tick_frequency_hz)
+        next_tick_time = time.perf_counter()
+        last_stats_time = time.time()
+        tick_count = 0
+
+        try:
+            while True:
+                tick_count += 1
+
+                try:
+                    packet, _ = self.stim_socket.recvfrom(udp_protocol.STIM_PACKET_SIZE)
+                    timestamp, frequencies, amplitudes = udp_protocol.unpack_stimulation_command(packet)
+                    self.packets_received += 1
+                    self.stim_commands_applied += 1
+
+                    response_delay_s = self.artifact_wait_s + self.collect_window_s
+                    if response_delay_s > 0.0:
+                        time.sleep(response_delay_s)
+
+                    spike_counts = self._generate_random_ablation_spike_counts()
+                    spike_packet = udp_protocol.pack_spike_data(spike_counts)
+                    self.spike_socket.sendto(spike_packet, (self.training_host, self.spike_port))
+                    self.packets_sent += 1
+
+                    if self.packets_received % 1000 == 0:
+                        latency = udp_protocol.get_latency_ms(timestamp)
+                        print(f"Packet latency: {latency:.2f} ms")
+
+                except BlockingIOError:
+                    pass
+                except Exception as e:
+                    print(f"Error receiving/sending random ablation spikes: {e}")
+
+                try:
+                    event_packet, _ = self.event_socket.recvfrom(4096)
+                    _, event_type, data = udp_protocol.unpack_event_metadata(event_packet)
+                    self.events_received += 1
+
+                    if event_type == "episode_end" and self.events_received <= 5:
+                        print(f"  [EVENT] Episode {data.get('episode', 'unknown')} received")
+                    elif event_type == "training_complete":
+                        print(f"\n{'='*70}")
+                        print("TRAINING COMPLETE")
+                        print(f"  Total Episodes: {data.get('total_episodes', 'unknown')}")
+                        print(f"  Total Steps: {data.get('total_steps', 'unknown')}")
+                        print(f"  Reason: {data.get('reason', 'unknown')}")
+                        print(f"{'='*70}\n")
+                        return
+
+                except BlockingIOError:
+                    pass
+                except Exception as e:
+                    if self.events_received == 0:
+                        print(f"  [WARNING] Error receiving event: {e}")
+
+                try:
+                    feedback_packet, _ = self.feedback_socket.recvfrom(udp_protocol.FEEDBACK_PACKET_SIZE)
+                    _, feedback_type, channels, frequency, amplitude, pulses, _, event_name = \
+                        udp_protocol.unpack_feedback_command(feedback_packet)
+                    self.feedback_commands_received += 1
+                    if self.feedback_commands_received <= 5:
+                        print(
+                            f"  [FEEDBACK IGNORED] {feedback_type} on {len(channels)} channels: "
+                            f"{frequency}Hz, {amplitude}uA, {pulses} pulses ({event_name})"
+                        )
+                except BlockingIOError:
+                    pass
+                except Exception as e:
+                    if self.feedback_commands_received == 0:
+                        print(f"  [WARNING] Error receiving feedback: {e}")
+
+                if time.time() - last_stats_time >= 10.0:
+                    elapsed = time.time() - last_stats_time
+                    recv_rate = self.packets_received / elapsed if elapsed > 0 else 0
+                    send_rate = self.packets_sent / elapsed if elapsed > 0 else 0
+                    avg_spikes = self.total_spikes / max(1, self.packets_sent)
+
+                    print(
+                        f"Stats: {tick_count} ticks | "
+                        f"Recv: {recv_rate:.1f} pkt/s | "
+                        f"Send: {send_rate:.1f} pkt/s | "
+                        f"Events: {self.events_received} | "
+                        f"Feedback: {self.feedback_commands_received} | "
+                            f"Avg random spikes: {avg_spikes:.2f}/packet"
+                    )
+
+                    last_stats_time = time.time()
+                    self.packets_received = 0
+                    self.packets_sent = 0
+                    self.events_received = 0
+                    self.feedback_commands_received = 0
+
+                next_tick_time += tick_interval
+                sleep_time = next_tick_time - time.perf_counter()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    next_tick_time = time.perf_counter()
+
+        except KeyboardInterrupt:
+            print("\n\nShutting down...")
+        finally:
+            print("\n" + "="*70)
+            print(f"Total ticks processed: {tick_count}")
+            print(f"Total stimulation commands received: {self.stim_commands_applied}")
+            print(f"Total spikes generated: {self.total_spikes}")
+            print("="*70 + "\n")
+
 
 def main():
     """Main entry point."""
@@ -565,7 +714,7 @@ def main():
         '--artifact-wait-ms',
         type=float,
         default=50.0,
-        help='Milliseconds to ignore spikes after stimulation before counting begins (default: 50)'
+        help='Milliseconds to ignore spikes after stimulation before counting begins; 0 disables artifact-skip ticks (default: 50)'
     )
     parser.add_argument(
         '--collect-window-ms',
@@ -579,8 +728,28 @@ def main():
         default='./recordings',
         help='Path for saving CL1 recordings (default: ./recordings)'
     )
+    parser.add_argument(
+        '--spike-ablation',
+        type=str,
+        default='none',
+        choices=['none', 'random'],
+        help='Ablate CL1 spike source before UDP reply; random bypasses the CL SDK/H5 replay simulator and sends random spike counts (default: none)'
+    )
+    parser.add_argument(
+        '--random-spike-rate-hz',
+        type=float,
+        default=5.0,
+        help='Random spike rate per channel in Hz when --spike-ablation random is enabled (default: 5.0)'
+    )
+    parser.add_argument(
+        '--spike-ablation-seed',
+        type=int,
+        default=None,
+        help='Optional random seed for --spike-ablation random'
+    )
 
     args = parser.parse_args()
+    spike_ablation_mode = args.spike_ablation
 
     interface = CL1NeuralInterface(
         training_host=args.training_host,
@@ -592,6 +761,9 @@ def main():
         recording_path=args.recording_path,
         artifact_wait_s=max(0.0, args.artifact_wait_ms / 1000.0),
         collect_window_s=max(0.0, args.collect_window_ms / 1000.0),
+        spike_ablation_mode=spike_ablation_mode,
+        random_spike_rate_hz=args.random_spike_rate_hz,
+        spike_ablation_seed=args.spike_ablation_seed,
     )
 
     interface.run()

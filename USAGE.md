@@ -32,6 +32,18 @@ Convenience scripts for testing locally with the SDK, start CL1 first:
 ./scripts/run_sdk_training_server.sh
 ```
 
+For high-rate local random-spike training without the SDK simulator replay/H5 path, run the CL1 side with spike ablation:
+
+```shell
+python cl1_neural_interface.py --training-host 127.0.0.1 --spike-ablation random --tick-frequency 240 --artifact-wait-ms 0 --collect-window-ms 4 --random-spike-rate-hz 5 --spike-ablation-seed 1
+```
+
+```shell
+python training_server.py --mode train --device cuda --cl1-host 127.0.0.1 --max-episodes 1000 --tick_frequency_hz 240 --spike-artifact-wait-ms 0
+```
+
+`--spike-ablation random` bypasses `cl.open()` and the local CL SDK replay backend. Use it for trainer/UDP/random-spike stress testing only, not as a CL SDK compatibility test or live hardware path. The old trainer-side `--decoder-ablation random` has been replaced by this CL1-side spike-source ablation.
+
 For visualisation, open `./visualisation.html` in a web browser, update the following line with the ip address of the training server:
 
 ```html
@@ -160,7 +172,9 @@ The scenario is set via `TrainingConfig.doom_config` in code (not a CLI argument
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `--decoder-ablation` | str | none | Ablation mode (none, zero, random) |
+| `--decoder-ablation` | str | none | Decoder-side diagnostic ablation mode (none, zero). Random spike-source tests use `cl1_neural_interface.py --spike-ablation random`. |
+| `--center-spike-features` / `--no-center-spike-features` | flag | enabled | Subtract a running spike-feature mean before the decoder |
+| `--spike-centering-beta` | float | 0.99 | EMA beta for the running spike-feature mean |
 | `--encoder-use-cnn` | flag | False | Enable CNN encoder for screen buffer |
 | `--encoder-same-frame-encoding` | flag | False | Experimental same-frame encoding with stacked spike rounds |
 | `--encoder-same-frame-repeats` | int | 3 | Number of repeated same-frame stimulation rounds |

@@ -260,7 +260,9 @@ class PPOConfig:
     wall_depth_max_distance: float = 18.0 # Already calibrated, keep as is
     encoder_trainable: bool = True # Can try turning it False but I would say True is needed for reasonable PPO policy gradients especially if decoder_use_mlp: False
     encoder_entropy_coef: float = -0.10 # Entropy penalty for the encoder since we use beta sampling
-    decoder_ablation_mode: str = 'none' # Ablation to test if decoder is learning on its own, "random" and "zero" are valid inputs
+    decoder_ablation_mode: str = 'none' # Ablation to test if decoder is learning on its own; use "zero" here and CL1 --spike-ablation random for random spike-source tests.
+    center_spike_features: bool = True # Remove per-channel baseline spike rates before decoder to reduce random-spike action priors.
+    spike_centering_beta: float = 0.99
     encoder_use_cnn: bool = True # With my testing it seems like the CNN does not overfit/learn on its own, seems useful to keep True
     encoder_same_frame_encoding: bool = False # Experimental: repeated frame views increase decoder capacity and have not been ablation-tested in Doom yet
     encoder_same_frame_repeats: int = 3
@@ -923,6 +925,9 @@ class PPOPolicy(nn.Module):
             config=config,
             num_joint_actions=self.num_joint_actions
         )
+        spike_feature_dim = self.num_channel_sets * self.encoder.num_rounds
+        self.register_buffer('spike_feature_mean', torch.zeros(spike_feature_dim), persistent=True)
+        self.register_buffer('spike_feature_mean_initialized', torch.tensor(False), persistent=True)
         self.value_net = ValueNetwork(obs_dim, config)
         self._stim_cache = LRUCache(maxsize=256)
         self.num_stim_rounds = self.encoder.num_rounds
@@ -975,7 +980,7 @@ class PPOPolicy(nn.Module):
             log_probs: (batch_size,)
             entropy: (batch_size,)
         """
-        spike_features = self.flatten_spike_rounds_tensor(spike_features)
+        spike_features = self.center_spike_features_tensor(spike_features)
         joint_logits = self.decoder(spike_features)
         joint_dist = Categorical(logits=joint_logits)
         if deterministic:
@@ -1045,6 +1050,41 @@ class PPOPolicy(nn.Module):
         if mode == 'random':
             return np.random.rand(*spike_features.shape).astype(spike_features.dtype, copy=False)
         return spike_features
+
+    def update_spike_feature_center(self, spike_features: torch.Tensor) -> None:
+        if not getattr(self.config, 'center_spike_features', True):
+            return
+        features = self.flatten_spike_rounds_tensor(spike_features.detach())
+        if features.numel() == 0:
+            return
+        if features.dim() == 1:
+            batch_mean = features
+        else:
+            batch_mean = features.mean(dim=0)
+        batch_mean = batch_mean.to(self.spike_feature_mean.device, dtype=self.spike_feature_mean.dtype)
+        if not bool(self.spike_feature_mean_initialized.item()):
+            self.spike_feature_mean.copy_(batch_mean)
+            self.spike_feature_mean_initialized.fill_(True)
+            return
+        beta = float(getattr(self.config, 'spike_centering_beta', 0.99))
+        beta = min(max(beta, 0.0), 0.9999)
+        self.spike_feature_mean.mul_(beta).add_(batch_mean, alpha=1.0 - beta)
+
+    def center_spike_features_tensor(self, spike_features: torch.Tensor) -> torch.Tensor:
+        if not getattr(self.config, 'center_spike_features', True):
+            return spike_features
+        features = self.flatten_spike_rounds_tensor(spike_features)
+        if not bool(self.spike_feature_mean_initialized.item()):
+            return features
+        center = self.spike_feature_mean.to(features.device, dtype=features.dtype)
+        return features - center
+
+    def center_spike_features_numpy(self, spike_features: np.ndarray) -> np.ndarray:
+        if not getattr(self.config, 'center_spike_features', True):
+            return spike_features
+        tensor = torch.from_numpy(np.asarray(spike_features, dtype=np.float32)).to(self.spike_feature_mean.device)
+        centered = self.center_spike_features_tensor(tensor)
+        return centered.detach().cpu().numpy().astype(np.float32, copy=False)
 
     def flatten_spike_rounds_tensor(self, spike_features: torch.Tensor) -> torch.Tensor:
         if spike_features.dim() == 3:
@@ -1120,7 +1160,7 @@ class PPOPolicy(nn.Module):
             values: (batch_size, 1)
             entropy: (batch_size,)
         """
-        spike_features = self.flatten_spike_rounds_tensor(spike_features)
+        spike_features = self.center_spike_features_tensor(spike_features)
         joint_logits = self.decoder(spike_features)
         joint_dist = Categorical(logits=joint_logits)
         forward_map = self.joint_forward_map.to(spike_features.device)
@@ -2937,6 +2977,7 @@ class PPOTrainer:
 
                 spike_counts = self.policy.flatten_spike_rounds_numpy(np.stack(round_spikes, axis=0))
                 spike_counts = self.policy.ablate_spike_features_numpy(spike_counts)
+                self.policy.update_spike_feature_center(torch.from_numpy(spike_counts).to(self.device))
 
                 # Decode spikes to action
                 spike_tensor = torch.FloatTensor(spike_counts).unsqueeze(0).to(self.device)
@@ -3180,6 +3221,7 @@ class PPOTrainer:
                 spike_tensor = self.policy.ablate_spike_features_tensor(
                     self.policy.flatten_spike_rounds_tensor(frequencies)
                 )
+                self.policy.update_spike_feature_center(spike_tensor)
                 (
                     forward_actions,
                     strafe_actions,
@@ -3607,12 +3649,18 @@ class PPOTrainer:
                 self.total_steps
             )
 
-        sample_features = self.policy.flatten_spike_rounds_tensor(spike_features)
+        sample_features = self.policy.center_spike_features_tensor(spike_features)
         if sample_features.size(0) > 1024:
             sample_features = sample_features[:1024]
         decoder_metrics = self.policy.decoder.compute_weight_bias_metrics(sample_features)
         for key, value in decoder_metrics.items():
             self.writer.add_scalar(key, value, self.total_steps)
+        if getattr(self.config, 'center_spike_features', True):
+            self.writer.add_scalar(
+                'SpikeFeature/center_mean_abs',
+                float(self.policy.spike_feature_mean.abs().mean().item()),
+                self.total_steps
+            )
 
         with torch.no_grad():
             value_predictions = self.policy.value_net(obs).squeeze(-1)
@@ -4042,8 +4090,14 @@ def main():
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device for gradient computation: cpu or cuda')
     parser.add_argument('--decoder-ablation', type=str, default='none',
-                        choices=['none', 'zero', 'random'],
-                        help='Ablate spike features before decoder (diagnostic)')
+                        metavar='{none,zero}',
+                        help='Ablate spike features before decoder (diagnostic). Use zero here; random has moved to cl1_neural_interface.py --spike-ablation random')
+    parser.add_argument('--center-spike-features', action='store_true', default=True,
+                        help='Subtract a running per-feature spike mean before the decoder')
+    parser.add_argument('--no-center-spike-features', action='store_false', dest='center_spike_features',
+                        help='Disable running-mean spike centering before the decoder')
+    parser.add_argument('--spike-centering-beta', type=float, default=None,
+                        help='EMA beta for running spike-feature mean when centering is enabled')
     parser.add_argument('--encoder-use-cnn', action='store_true',
                         help='Use CNN encoder over screen buffer in addition to scalar features')
     parser.add_argument('--encoder-same-frame-encoding', action='store_true',
@@ -4091,6 +4145,13 @@ def main():
                         help='Disable surprise scaling for episode feedback')
 
     args = parser.parse_args()
+    if args.decoder_ablation == 'random':
+        parser.error(
+            "--decoder-ablation random has been replaced by the CL1-side command "
+            "`cl1_neural_interface.py --spike-ablation random`, which avoids the SDK simulator H5 replay path."
+        )
+    if args.decoder_ablation not in {'none', 'zero'}:
+        parser.error("--decoder-ablation must be one of: none, zero")
 
     print(f"\n{'='*60}")
     print(f"PPO Neural Controller for VizDoom")
@@ -4111,6 +4172,9 @@ def main():
         config = PPOConfig(max_episodes=args.max_episodes)
 
     config.decoder_ablation_mode = args.decoder_ablation
+    config.center_spike_features = bool(args.center_spike_features)
+    if args.spike_centering_beta is not None:
+        config.spike_centering_beta = args.spike_centering_beta
     if args.encoder_use_cnn:
         config.encoder_use_cnn = True
     config.encoder_same_frame_encoding = args.encoder_same_frame_encoding
